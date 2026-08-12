@@ -71,13 +71,35 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # No rebase here, on purpose. These files are build output, not edits, so there
+          # is nothing to merge - the freshly built copy always wins. A rebase tries to
+          # merge the xlsx, git cannot merge a binary file, and the job ends on a detached
+          # HEAD. Instead: move HEAD to whatever origin has now, keep the working tree
+          # untouched, then commit the new files on top. That can never conflict.
+          git fetch origin "${{ github.ref_name }}"
+          git reset --soft "origin/${{ github.ref_name }}"
+
           git add index.html output data
           if git diff --quiet --cached; then
             echo "Nothing changed, no commit needed."
           else
             git commit -m "Screener rebuild $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git pull --rebase --autostash origin ${{ github.ref_name }} || true
-            git push
+            for attempt in 1 2 3; do
+              if git push origin "HEAD:${{ github.ref_name }}"; then
+                echo "Pushed on attempt $attempt."
+                exit 0
+              fi
+              echo "Push rejected, someone else committed. Rebasing onto the new tip."
+              git fetch origin "${{ github.ref_name }}"
+              git reset --soft "origin/${{ github.ref_name }}"
+              git add index.html output data
+              git diff --quiet --cached && { echo "Nothing left to push."; exit 0; }
+              git commit -m "Screener rebuild $(date -u +'%Y-%m-%d %H:%M UTC')"
+              sleep 5
+            done
+            echo "Could not push after 3 attempts."
+            exit 1
           fi
 
       - name: Keep the built files as a download even if the commit is skipped
