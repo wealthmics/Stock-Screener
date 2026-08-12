@@ -1,29 +1,28 @@
 name: Build screener
 
-# Three ways this runs:
+# Two ways this runs:
+#   1. schedule           - every night at 12:00 AM IST
+#   2. workflow_dispatch  - the "Run workflow" button on the Actions tab
 #
-# 1. push - you upload a new All Stocks CSV into the data/ folder
-# 2. workflow_dispatch - the "Run workflow" button on the Actions tab
-# 3. schedule - every weekday morning, so the Dataroma side stays fresh
-
+# The push trigger is deliberately absent, so uploading a new CSV does not start a build
+# by itself. Upload whenever you like, then press Run workflow or wait for the nightly
+# run. To bring the old behaviour back, add these three lines above schedule:
+#   push:
+#     paths:
+#       - 'data/**'
 on:
-  push:
-    paths:
-      - 'data/**'
-      - 'marquee_screener.py'
-      - '.github/workflows/build-screener.yml'
-
+  schedule:
+    # 18:30 UTC = 00:00 IST the next day. GitHub cron is always UTC.
+    # Scheduled runs are best effort, so expect anywhere from midnight to about an hour
+    # later when their queues are busy.
+    - cron: '30 18 * * *'
   workflow_dispatch:
 
-  schedule:
-    # 02:30 UTC = 06:30 Gulf time, Monday to Friday
-    - cron: '30 2 * * 1-5'
-
-# Allows the workflow to commit index.html and workbook back into the repo
+# lets the job commit index.html and the workbook back into the repo
 permissions:
   contents: write
 
-# A second run waits for the first instead of fighting over the branch
+# a second run waits for the first instead of fighting over the branch
 concurrency:
   group: build-screener
   cancel-in-progress: false
@@ -34,28 +33,21 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # 1. Check out repository
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
 
-      # 3. Install Python dependencies
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install --upgrade pandas openpyxl selenium
+        run: pip install --upgrade pandas openpyxl selenium
 
-      # 4. Check data folder
       - name: Show what is in data/
-        run: |
-          ls -la data/ || echo "data/ folder is missing"
+        run: ls -la data/ || echo "data/ folder is missing"
 
-      # 5. Build screener and workbook
       - name: Build the screener and the workbook
         run: |
           python marquee_screener.py \
@@ -66,23 +58,19 @@ jobs:
             --stable-names \
             --no-upload
 
-      # 6. Commit generated files back to GitHub
       - name: Commit and push whatever changed
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add index.html output data
-
           if git diff --quiet --cached; then
             echo "Nothing changed, no commit needed."
           else
             git commit -m "Screener rebuild $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git pull --rebase --autostash origin "${{ github.ref_name }}"
+            git pull --rebase --autostash origin ${{ github.ref_name }} || true
             git push
           fi
 
-      # 7. Keep built files available as downloadable artifact
       - name: Keep the built files as a download even if the commit is skipped
         if: always()
         uses: actions/upload-artifact@v4
