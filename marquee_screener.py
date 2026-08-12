@@ -121,8 +121,8 @@ from openpyxl.utils import get_column_letter
 # the command line.
 #   Windows:      DATA_DIR = r'C:\Users\Shobhit\Desktop\screener\data'
 #   Mac / Linux:  DATA_DIR = '/Users/shobhit/Desktop/screener/data'
-DATA_DIR = 'data'      # the workflow passes --data-dir data anyway
-OUT_DIR  = 'output'    # the workflow passes --out-dir output anyway
+DATA_DIR = 'data'
+OUT_DIR  = 'output'
 
 SCREEN_UNIVERSE = 'all'    # 'all' = full universe, 'marquee' = superinvestor holdings only
 
@@ -173,6 +173,15 @@ DATE_IN_FILENAME = True
 # Leave it as '' to switch the feature off.
 #   PUBLISH_DIR = r'C:\Users\LENOVO\Desktop\mics-screener'
 PUBLISH_DIR = ''
+
+# --------------------------------------------------------------------------------------
+# Deep analysis app. When this is set, every ticker in the HTML screener becomes a link
+# to a Streamlit app that pulls live data for that one company and runs the forensic
+# scores. Leave it as '' and the tickers stay plain text.
+# Streamlit is the right home for that page because the fetch happens server side -
+# a static page cannot call Yahoo directly, since Yahoo sends no CORS header.
+#   DEEP_APP_URL = 'https://your-app.streamlit.app'
+DEEP_APP_URL = 'https://mics-deep-analysis-dcxigpgnhvhywvq2599eh3.streamlit.app'
 
 # --------------------------------------------------------------------------------------
 # GitHub upload. With this on, the screener is pushed straight to the repo at the end of
@@ -991,6 +1000,17 @@ ETF_HINT = re.compile(r'\b(etf|ishares|spdr|vanguard|index|invesco|proshares|sel
                       r'|davis select)\b', re.I)
 
 
+ISIN_COL_HINT = re.compile(r'isin', re.I)
+
+
+def find_isin_column(df):
+    """The ISIN column, whatever TradingView decided to call it, or None."""
+    for c in df.columns:
+        if ISIN_COL_HINT.search(str(c)):
+            return c
+    return None
+
+
 def load_universe(path):
     a = pd.read_csv(path)
     for col in ('Altman Z-score, Trailing 12 months', 'Piotroski F-score, Trailing 12 months'):
@@ -1000,6 +1020,16 @@ def load_universe(path):
     a['_sym'] = a['Symbol'].astype(str).str.strip()
     a['_norm'] = a['Description'].map(norm_name)
     a['_us'] = (a['Country or region of registration'] == 'United States').astype(int)
+    isin_col = find_isin_column(a)
+    if isin_col:
+        a['ISIN'] = a[isin_col].astype(str).str.strip().str.upper()
+        good = a['ISIN'].str.fullmatch(r'[A-Z]{2}[A-Z0-9]{9}[0-9]', na=False)
+        a.loc[~good, 'ISIN'] = None
+        print(f"      ISIN column '{isin_col}' found - {int(good.sum())} of {len(a)} rows "
+              f"carry a valid ISIN")
+    else:
+        a['ISIN'] = None
+        print('      no ISIN column in this export - deep links will pass the ticker only')
     return a
 
 
@@ -1717,6 +1747,7 @@ def sheet_sector_screen(wb, gics, passed, rule_text, universe_label, stamp):
 
 # ------------------------------------------------------------------ html -------------
 HTML_COLS = [('Symbol', 'sym'), ('Description', 'name'), ('GICS Sector', 'gics'),
+             ('ISIN', 'isin'),
              ('Country or region of registration', 'ctry'), ('Marquee Flag', 'mq'),
              ('Marquee Wt %', 'wt'), ('Market capitalization', 'mcap'),
              ('Price to earnings ratio', 'pe'), ('Price to earnings ratio forward', 'fpe'),
@@ -1780,6 +1811,7 @@ def build_html(a2, out_path, stamp, split=False):
         'blankFails': BLANK_FAILS,
         'minCoverage': MIN_DATA_COVERAGE,
         'stamp': stamp,
+        'deepUrl': DEEP_APP_URL.rstrip('/'),
         'xlsxUrl': (f'https://github.com/{GITHUB_REPO}/raw/{GITHUB_BRANCH}/{GITHUB_XLSX}'
                     if (GITHUB_UPLOAD and GITHUB_XLSX) else ''),
     }
@@ -1844,6 +1876,8 @@ HTML_TEMPLATE = r"""<!doctype html>
  tbody tr:nth-child(even){background:#f8fafc}
  tbody tr:hover{background:#fff7e0}
  .mqdot{color:var(--gold);font-weight:700}
+ td a.tk{color:var(--navy);font-weight:600;text-decoration:none;border-bottom:1px dotted var(--navy)}
+ td a.tk:hover{color:var(--gold);border-bottom-color:var(--gold)}
  .warn{background:#fff4f4;border:1px solid #f0c8c8;color:#9c2b2b;padding:9px 11px;border-radius:6px;font-size:12px;margin-bottom:10px}
  .note{font-size:11px;color:#777;margin-top:8px;line-height:1.5}
  .grp{margin-top:14px;padding-top:8px;border-top:2px solid var(--navy)}
@@ -1893,7 +1927,7 @@ HTML_TEMPLATE = r"""<!doctype html>
    <span class="pill" id="showing"></span>
   </div>
   <div class="tw"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
-  <div class="note">Click a column heading to sort. The table shows the first 400 rows; the CSV download contains the full list.</div>
+  <div class="note" id="hint">Click a column heading to sort. The table shows the first 400 rows; the CSV download contains the full list.</div>
  </div>
 </div>
 <script>
@@ -2016,6 +2050,17 @@ function render(){
     const tr=document.createElement('tr');
     tr.innerHTML=COLS.map(([k])=>{
       let v=val(r,k);
+      if(k==='sym' && DATA.deepUrl){
+        // The ISIN goes first because Yahoo's own search resolves it to the right symbol,
+        // which beats guessing a venue suffix. The currency comes along so the app can
+        // prefer the local listing over a US ADR. The ticker rides as a fallback.
+        let q='?ticker='+encodeURIComponent(v);
+        const isin=r[IX.isin], ccy=r[IX.ccy];
+        if(isin) q+='&isin='+encodeURIComponent(isin);
+        if(ccy)  q+='&ccy='+encodeURIComponent(ccy);
+        return '<td><a class="tk" target="_blank" rel="noopener" href="'+DATA.deepUrl+'/'+q+
+               '" title="Open the deep analysis for '+v+(isin?' ('+isin+')':'')+'">'+v+'</a></td>';
+      }
       if(k==='mq') return '<td class="mqdot">'+(v?'\u2605':'')+'</td>';
       if(v===null||v===undefined) return '<td>-</td>';
       if(typeof v==='number'){
@@ -2065,6 +2110,11 @@ document.getElementById('q').addEventListener('input',run);
 function init(){
   document.getElementById('asof').textContent =
     '  -  updated as of ' + DATA.stamp.data + '  (marquee list ' + DATA.stamp.marquee + ')';
+  if(DATA.deepUrl){
+    document.getElementById('hint').innerHTML =
+      'Click a <b>ticker</b> to open the live deep analysis for that company. Click a column heading to sort. '
+      + 'The table shows the first 400 rows; the CSV download contains the full list.';
+  }
   if(DATA.xlsxUrl){ const a=document.getElementById('xlsx');
     a.href=DATA.xlsxUrl; a.style.display='inline-block'; }
   buildSectorSelect();
