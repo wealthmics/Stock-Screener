@@ -1,0 +1,8 @@
+# Dependencies for the screener build in GitHub Actions.
+# Upload this to the Stock-Screener repo root, named exactly: requirements.txt
+# The workflow needs it for two reasons: setup-python's pip cache looks for this file, and
+# pinning here means a new pandas release cannot break the nightly build without warning.
+
+pandas>=2.0.0
+openpyxl>=3.1.0
+selenium>=4.15.0        # only used when SCRAPE_DATAROMA is 'auto' or 'always'
