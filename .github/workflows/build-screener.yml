@@ -40,10 +40,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
+          # cache: pip is deliberately absent. It needs a requirements.txt or
+          # pyproject.toml to exist before setup-python runs, and it fails the whole job
+          # when neither is there. The install below is only three packages, so caching
+          # saves a few seconds and is not worth a build that can break on layout.
 
       - name: Install dependencies
-        run: pip install --upgrade pandas openpyxl selenium
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install --upgrade -r requirements.txt
+          else
+            echo "No requirements.txt in the repo, installing the defaults."
+            pip install --upgrade pandas openpyxl selenium
+          fi
 
       - name: Show what is in data/
         run: ls -la data/ || echo "data/ folder is missing"
