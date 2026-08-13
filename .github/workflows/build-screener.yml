@@ -80,7 +80,7 @@ jobs:
           git fetch origin "${{ github.ref_name }}"
           git reset --soft "origin/${{ github.ref_name }}"
 
-          git add index.html output data
+          git add index.html stocks.json sector_stats.json output data
           if git diff --quiet --cached; then
             echo "Nothing changed, no commit needed."
           else
@@ -93,7 +93,7 @@ jobs:
               echo "Push rejected, someone else committed. Rebasing onto the new tip."
               git fetch origin "${{ github.ref_name }}"
               git reset --soft "origin/${{ github.ref_name }}"
-              git add index.html output data
+              git add index.html stocks.json sector_stats.json output data
               git diff --quiet --cached && { echo "Nothing left to push."; exit 0; }
               git commit -m "Screener rebuild $(date -u +'%Y-%m-%d %H:%M UTC')"
               sleep 5
