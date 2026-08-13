@@ -181,7 +181,7 @@ PUBLISH_DIR = ''
 # Streamlit is the right home for that page because the fetch happens server side -
 # a static page cannot call Yahoo directly, since Yahoo sends no CORS header.
 #   DEEP_APP_URL = 'https://your-app.streamlit.app'
-DEEP_APP_URL = 'https://mics-deep-analysis-dcxigpgnhvhywvq2599eh3.streamlit.app'
+DEEP_APP_URL = ''
 
 # --------------------------------------------------------------------------------------
 # GitHub upload. With this on, the screener is pushed straight to the repo at the end of
@@ -201,17 +201,19 @@ DEEP_APP_URL = 'https://mics-deep-analysis-dcxigpgnhvhywvq2599eh3.streamlit.app'
 # A token is a password. Never share it, never screenshot it, and never let this script
 # sit in a public repo with a real token pasted in. If one ever leaks, revoke it on the
 # same GitHub page and generate a new one.
-GITHUB_UPLOAD = False  # not needed in Actions; the workflow commits
+GITHUB_UPLOAD = False  # the workflow commits instead
 GITHUB_REPO   = 'wealthmics/Stock-Screener'   # owner/repo
 GITHUB_BRANCH = 'main'
 GITHUB_PATH   = 'index.html'                  # the name GitHub Pages serves
 GITHUB_XLSX   = 'Marquee_Investor_Portfolio_Consolidated.xlsx'   # '' to skip the workbook
+# the deep analysis app fetches these two from the Pages site, so they have to be committed
+GITHUB_FEED   = ['stocks.json', 'sector_stats.json']
 # The token is written in below as you asked. Because it sits inside this file, do not
 # upload this .py to the public Stock-Screener repo - GitHub's secret scanner will find it
 # and disable the token. To move it out later, set the line back to '' and run once in
 # Command Prompt:   setx GITHUB_TOKEN github_pat_your_token_here   then restart Jupyter.
 # When the line is empty the script reads the GITHUB_TOKEN environment variable instead.
-GITHUB_TOKEN  = ''   # empty on purpose: GitHub Actions commits the files itself
+GITHUB_TOKEN  = ''
 
 # How the HTML is written.
 #   False  one self-contained file, about 6 MB. Double-click and it works, no internet,
@@ -1745,6 +1747,153 @@ def sheet_sector_screen(wb, gics, passed, rule_text, universe_label, stamp):
 
 
 
+
+# ------------------------------------------------------------------ deep app feed -----
+# The deep analysis app needs the TradingView numbers, and it cannot get them from the
+# HTML screener. So the build publishes two small JSON files next to index.html:
+#
+#   stocks.json        keyed by ISIN, one entry per name worth analysing. Carries every
+#                      TradingView field plus the Dataroma ownership, so the deep page
+#                      shows TradingView as its primary source and reaches for Yahoo only
+#                      where TradingView has nothing.
+#   sector_stats.json  per GICS sector quartiles for the main ratios. This is what turns
+#                      "ROE 18.2%" into "ROE 18.2%, sector median 12.8%, 72nd percentile",
+#                      and the data was already sitting in the export.
+#
+# Only screened names and marquee holdings go in, not all 30,000 rows. That keeps the file
+# near a megabyte instead of ten, which matters because the app fetches it on load.
+
+DEEP_FEED_FIELDS = [
+    ('Symbol', 'ticker'), ('Description', 'name'), ('ISIN', 'isin'),
+    ('Sector', 'tv_sector'), ('GICS Sector', 'gics'), ('Industry', 'industry'),
+    ('Country or region of registration', 'country'),
+    ('Market capitalization', 'mcap'), ('Market capitalization - Currency', 'mcap_ccy'),
+    ('Price', 'price'), ('Price - Currency', 'ccy'),
+    ('Price to earnings ratio', 'pe'), ('Price to earnings ratio forward', 'fpe'),
+    ('Return on invested capital %, Trailing 12 months', 'roic'),
+    ('Return on capital employed %, Trailing 12 months', 'roce'),
+    ('Return on assets %, Trailing 12 months', 'roa'),
+    ('Return on equity %, Trailing 12 months', 'roe'),
+    ('Gross margin %, Annual', 'gross_margin'),
+    ('Operating margin %, Annual', 'op_margin'),
+    ('Net margin %, Annual', 'net_margin'),
+    ('Free cash flow margin %, Annual', 'fcf_margin'),
+    ('Free cash flow, Annual', 'fcf'), ('Free cash flow, Annual - Currency', 'fcf_ccy'),
+    ('Current ratio, Quarterly', 'current_ratio'),
+    ('Debt to equity ratio, Quarterly', 'debt_equity'),
+    ('Interest coverage, Annual', 'interest_cover'),
+    ('EBITDA interest coverage, Annual', 'ebitda_cover'),
+    ('Altman Z-score, Trailing 12 months', 'altman_z'),
+    ('Piotroski F-score, Trailing 12 months', 'piotroski_f'),
+    ('Performance %, Year to date', 'perf_ytd'),
+    ('Performance %, 6 months', 'perf_6m'),
+    ('Performance %, 1 year', 'perf_1y'),
+    ('Performance %, 5 years', 'perf_5y'),
+    ('Exponential moving average, 50, 1 day', 'ema50'),
+    ('Exponential moving average, 200, 1 day', 'ema200'),
+    ('Relative strength index, 14, 1 day', 'rsi14'),
+]
+
+# the period each TradingView field actually covers, so the deep page can label it and
+# nobody compares a trailing-twelve-month return against an annual margin by accident
+DEEP_FEED_PERIODS = {
+    'pe': 'TTM', 'fpe': 'Forward', 'roic': 'TTM', 'roce': 'TTM', 'roa': 'TTM', 'roe': 'TTM',
+    'gross_margin': 'Annual', 'op_margin': 'Annual', 'net_margin': 'Annual',
+    'fcf_margin': 'Annual', 'fcf': 'Annual',
+    'current_ratio': 'Quarterly', 'debt_equity': 'Quarterly',
+    'interest_cover': 'Annual', 'ebitda_cover': 'Annual',
+    'altman_z': 'TTM', 'piotroski_f': 'TTM',
+    'mcap': 'Current', 'price': 'Current', 'ema50': 'Current', 'ema200': 'Current',
+    'rsi14': 'Current',
+}
+
+# ratios worth a peer distribution; absolute figures are excluded because a median market
+# cap or free cash flow across a sector says nothing useful
+PEER_METRICS = ['pe', 'fpe', 'roic', 'roce', 'roa', 'roe', 'gross_margin', 'op_margin',
+                'net_margin', 'fcf_margin', 'current_ratio', 'debt_equity',
+                'interest_cover', 'altman_z', 'piotroski_f']
+
+
+def _clean_number(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            value = float(value)
+        except ValueError:
+            return value
+    if isinstance(value, float):
+        if pd.isna(value):
+            return None
+        return round(value, 4)
+    return value
+
+
+def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
+    """Write stocks.json and sector_stats.json for the deep analysis app."""
+    rows = all_rows[
+        all_rows['Symbol'].isin(screened_symbols)
+        | (all_rows['Marquee Flag'] == 'Marquee holding')
+    ].copy()
+    rows = rows[rows['ISIN'].notna()]
+    if len(rows) == 0:
+        print('      deep feed skipped - no screened rows carry an ISIN')
+        return
+
+    stocks = {}
+    for _, r in rows.iterrows():
+        entry = {}
+        for src, key in DEEP_FEED_FIELDS:
+            entry[key] = _clean_number(r.get(src))
+        entry['marquee'] = bool(r.get('Marquee Flag') == 'Marquee holding')
+        entry['marquee_weight_pct'] = _clean_number(r.get('Marquee Wt %'))
+        entry['marquee_investors'] = _clean_number(r.get('Investors Holding'))
+        entry['screened'] = bool(r['Symbol'] in screened_symbols)
+        # last writer wins on a duplicate ISIN, which only happens for dual listings
+        stocks[r['ISIN']] = entry
+
+    feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
+            'built': stamp['built'], 'source': 'TradingView screener export',
+            'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
+
+    # peer distributions, computed on the FULL universe rather than the screened subset,
+    # because a median taken from names that already passed a quality screen is not a
+    # sector median - it is a median of the winners
+    stats = {}
+    for gics in SECTOR_MAP:
+        sub = all_rows[all_rows['GICS Sector'] == gics]
+        if len(sub) < 20:
+            continue
+        block = {'count': int(len(sub))}
+        for src, key in DEEP_FEED_FIELDS:
+            if key not in PEER_METRICS:
+                continue
+            series = pd.to_numeric(sub[src], errors='coerce').dropna()
+            if len(series) < 20:
+                continue
+            block[key] = {'n': int(len(series)),
+                          'p25': round(float(series.quantile(0.25)), 4),
+                          'median': round(float(series.median()), 4),
+                          'p75': round(float(series.quantile(0.75)), 4)}
+        stats[gics] = block
+
+    stats_feed = {'as_of': stamp['data'], 'basis': 'full TradingView universe, not the '
+                                                   'screened subset', 'sectors': stats}
+
+    for folder in [d for d in (out_dir, publish_dir) if d]:
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, 'stocks.json'), 'w') as fh:
+            json.dump(feed, fh, separators=(',', ':'))
+        with open(os.path.join(folder, 'sector_stats.json'), 'w') as fh:
+            json.dump(stats_feed, fh, indent=1)
+    size = os.path.getsize(os.path.join(out_dir, 'stocks.json')) / 1024
+    print(f'      deep feed -> stocks.json ({len(stocks)} names, {size:,.0f} KB) '
+          f'and sector_stats.json ({len(stats)} sectors)')
+
+
 # ------------------------------------------------------------------ html -------------
 HTML_COLS = [('Symbol', 'sym'), ('Description', 'name'), ('GICS Sector', 'gics'),
              ('ISIN', 'isin'),
@@ -2320,6 +2469,7 @@ def main():
         return '   |   '.join(f'{lbl} {op} {val}' for lbl, op, val in applied)
 
     counts = {}
+    screened_all = set()
     for gics in screen_order():
         if gics == ALL_LABEL and ALL_SECTORS_USES_SECTOR_RULES:
             # each row judged on its own sector's block, then combined
@@ -2340,6 +2490,7 @@ def main():
             passed, applied, _ = screen(sub, gics)
             rule_text = rule_line(applied)
         counts[gics] = len(passed)
+        screened_all.update(passed['Symbol'])
         sheet_sector_screen(wb, gics, passed, rule_text, label, stamp)
         us = int((passed['Country or region of registration'] == 'United States').sum())
         mq = int((passed['Marquee Flag'] == 'Marquee holding').sum())
@@ -2351,6 +2502,7 @@ def main():
               f'(US {us}, non-US {len(passed) - us} | marquee {mq}, other {len(passed) - mq})'
               f'{flag}{note}')
     sheet_screen_settings(wb, counts, stamp)
+    write_deep_feed(a2, screened_all, args.out_dir, PUBLISH_DIR, stamp)
 
     # refresh the Read Me pass-count line now that screens have run
     ws = wb['Read Me']
@@ -2389,7 +2541,9 @@ def main():
                 print('      next: cd into that folder, then')
                 print(f'        git add index.html && git commit -m "screener {stamp["iso"]}" && git push')
         if GITHUB_UPLOAD:
-            publish_to_github([(html, GITHUB_PATH), (xlsx, GITHUB_XLSX)], stamp)
+            payload = [(html, GITHUB_PATH), (xlsx, GITHUB_XLSX)]
+            payload += [(os.path.join(args.out_dir, f), f) for f in GITHUB_FEED]
+            publish_to_github(payload, stamp)
     else:
         print('[6/6] HTML skipped')
     print('\nDone. The "Screen Settings" sheet lists the final thresholds for every sector.')
