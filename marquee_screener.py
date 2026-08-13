@@ -181,7 +181,7 @@ PUBLISH_DIR = ''
 # Streamlit is the right home for that page because the fetch happens server side -
 # a static page cannot call Yahoo directly, since Yahoo sends no CORS header.
 #   DEEP_APP_URL = 'https://your-app.streamlit.app'
-DEEP_APP_URL = ''
+DEEP_APP_URL = 'https://mics-deep-analysis-dcxigpgnhvhywvq2599eh3.streamlit.app'
 
 # --------------------------------------------------------------------------------------
 # GitHub upload. With this on, the screener is pushed straight to the repo at the end of
