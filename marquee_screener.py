@@ -21,13 +21,20 @@ STEP 1 - WHERE TO PUT THE CSV FILES
           Marquee_Investor_Portfolio_Consolidated.xlsx
           Sector_Screener.html
 
+  COLUMN NAMES CAN DRIFT TOO. If TradingView renames a column, for example switching a
+  margin from "Annual" to "Trailing 12 months", the script finds the new name on its
+  own and says so in the run log. A metric dropped from the export entirely just has its
+  filter switched off for that run. Only the identity columns (Symbol, Description,
+  Country, Sector, Industry, Price, Market capitalization) are truly required.
+
   FILENAMES DO NOT MATTER. The script opens every CSV in the folder and works out
   which is which from the column headers, so you can rename or re-export the files
   as often as you like. The All Stocks export is recognised by columns such as
   "Market capitalization" and "Price to earnings ratio"; the Dataroma export by its
   ownership columns such as "Ownership count" and "Hold Price".
-  If an older copy of either export is still sitting in the folder, the most recently
-  modified one is used and the older one is reported and skipped. Any CSV that matches
+  If an older copy of either export is still sitting in the folder, the one with the
+  latest date in its filename is used (modified time breaks ties, or decides when the
+  name carries no date) and the older one is reported and skipped. Any CSV that matches
   neither export is ignored.
 
   The Dataroma half can also be scraped for you instead of exported by hand - see
@@ -823,15 +830,15 @@ FILTER_SPECS = {
     'roic_min'          : ('Return on invested capital %, Trailing 12 months',  'min', 'ROIC %'),
     'roce_min'          : ('Return on capital employed %, Trailing 12 months',  'min', 'ROCE %'),
     'roa_min'           : ('Return on assets %, Trailing 12 months',            'min', 'ROA %'),
-    'gross_margin_min'  : ('Gross margin %, Annual',                            'min', 'Gross margin %'),
-    'op_margin_min'     : ('Operating margin %, Annual',                        'min', 'Operating margin %'),
-    'net_margin_min'    : ('Net margin %, Annual',                              'min', 'Net margin %'),
-    'fcf_margin_min'    : ('Free cash flow margin %, Annual',                   'min', 'FCF margin %'),
+    'gross_margin_min'  : ('Gross margin %, Trailing 12 months',                            'min', 'Gross margin %'),
+    'op_margin_min'     : ('Operating margin %, Trailing 12 months',                        'min', 'Operating margin %'),
+    'net_margin_min'    : ('Net margin %, Trailing 12 months',                              'min', 'Net margin %'),
+    'fcf_margin_min'    : ('Free cash flow margin %, Trailing 12 months',                   'min', 'FCF margin %'),
     'altman_min'        : ('Altman Z-score, Trailing 12 months',                'min', 'Altman Z'),
     'piotroski_min'     : ('Piotroski F-score, Trailing 12 months',             'min', 'Piotroski F'),
     'current_ratio_min' : ('Current ratio, Quarterly',                          'min', 'Current ratio'),
     'de_max'            : ('Debt to equity ratio, Quarterly',                   'max', 'Debt / Equity'),
-    'int_cov_min'       : ('Interest coverage, Annual',                         'min', 'Interest coverage'),
+    'int_cov_min'       : ('Interest coverage, Trailing 12 months',                         'min', 'Interest coverage'),
     'mcap_min'          : ('Market capitalization',                             'min', 'Market cap'),
 }
 
@@ -866,6 +873,13 @@ def file_date(path):
         except ValueError:
             pass
     return datetime.date.fromtimestamp(os.path.getmtime(path))
+
+
+def file_rank(path):
+    """Sort key for 'which file is newest'. The date written in the filename wins, and the
+    modified time only breaks ties. On GitHub Actions every file gets the same modified time
+    at checkout, so ranking by modified time alone picks an arbitrary file."""
+    return (file_date(path), os.path.getmtime(path))
 
 
 def pretty_date(d):
@@ -922,7 +936,7 @@ def find_files(data_dir):
         found[classify(path) or 'unknown'].append(path)
 
     def newest(paths):
-        return max(paths, key=os.path.getmtime) if paths else None
+        return max(paths, key=file_rank) if paths else None
 
     uni, mrq = newest(found['universe']), newest(found['marquee'])
     if uni and mrq:
@@ -1013,12 +1027,142 @@ def find_isin_column(df):
     return None
 
 
+# ------------------------------------------------------------------ column resolver ---
+# TradingView renames columns from time to time, most often by switching the period, for
+# example "Gross margin %, Annual" becoming "Gross margin %, Trailing 12 months". The
+# resolver below lets the script survive that without any code change. For every column
+# the script needs, it looks in the CSV for
+#   1. the exact name
+#   2. the same name with different spacing or capital letters
+#   3. a known synonym for the identity columns (Ticker for Symbol, Name for Description)
+#   4. the same metric with a different period, preferring TTM, then Annual, then Quarterly
+# Whatever it finds is copied under the name the script uses, and the run log says what
+# was swapped. A metric that is missing entirely becomes a blank column and its filter is
+# switched off for the run, so a dropped column can never crash the build or empty a screen.
+
+PERIOD_PREFERENCE = ['trailing 12 months', 'annual', 'fiscal year', 'quarterly',
+                     'fiscal quarter', 'most recent quarter']
+PERIOD_SHORT = {'trailing 12 months': 'TTM', 'annual': 'Annual', 'fiscal year': 'Annual',
+                'quarterly': 'Quarterly', 'fiscal quarter': 'Quarterly',
+                'most recent quarter': 'Quarterly'}
+PERIOD_WORDS = {'TTM': 'trailing twelve months', 'Annual': 'annual',
+                'Quarterly': 'latest quarter'}
+IDENTITY_SYNONYMS = {
+    'Symbol': ['Ticker', 'Symbol name'],
+    'Description': ['Name', 'Company', 'Company name'],
+    'Country or region of registration': ['Country', 'Country or region'],
+    'Market capitalization': ['Market cap'],
+    'Market capitalization - Currency': ['Market cap - Currency'],
+}
+# without these the build cannot work at all, so their absence stops the run
+ESSENTIAL_COLS = ['Symbol', 'Description', 'Country or region of registration',
+                  'Sector', 'Industry', 'Price', 'Market capitalization']
+COLUMN_SOURCE = {}     # name the script uses -> CSV column it was actually read from
+MISSING_COLS = set()   # names the CSV does not carry in any form
+
+
+def _norm_col(c):
+    return re.sub(r'\s+', ' ', str(c)).strip().lower()
+
+
+def _split_col(c):
+    """'Gross margin %, Annual - Currency' -> ('gross margin %', 'annual', ' - currency')."""
+    n = _norm_col(c)
+    tail = ''
+    if n.endswith(' - currency'):
+        n, tail = n[:-len(' - currency')], ' - currency'
+    base, period = n.rsplit(', ', 1) if ', ' in n else (n, '')
+    return base, period, tail
+
+
+def canonical_columns():
+    """Every source column the script reads, gathered from its own column lists."""
+    cols = set(ESSENTIAL_COLS) | {'Price - Currency', 'Market capitalization - Currency'}
+    cols |= {spec[0] for spec in FILTER_SPECS.values()}
+    cols |= {src for src, _ in DEEP_FEED_FIELDS}
+    cols |= {src for src, _ in HTML_COLS}
+    for _, _, items in metric_groups(''):
+        cols |= {src for _, src, _ in items}
+    derived = {'ISIN', 'GICS Sector', 'Marquee Flag', 'Marquee Wt %', 'Investors Holding'}
+    return sorted(c for c in cols if c not in derived and not c.startswith('__'))
+
+
+def period_of(name):
+    """The period a column really covers in this run: TTM, Annual, Quarterly or ''."""
+    _, p, _ = _split_col(COLUMN_SOURCE.get(name, name))
+    return PERIOD_SHORT.get(p, '')
+
+
+def period_words(name, fallback):
+    return PERIOD_WORDS.get(period_of(name), fallback)
+
+
+def resolve_columns(a):
+    """Map whatever the CSV calls each column onto the names the script uses."""
+    COLUMN_SOURCE.clear()
+    MISSING_COLS.clear()
+    present = {_norm_col(c): c for c in a.columns}
+    by_base = {}
+    for c in a.columns:
+        b, p, t = _split_col(c)
+        by_base.setdefault((b, t), []).append((p, c))
+
+    def rank(item):
+        p = item[0]
+        return PERIOD_PREFERENCE.index(p) if p in PERIOD_PREFERENCE else len(PERIOD_PREFERENCE)
+
+    swapped = []
+    for canon in canonical_columns():
+        if canon in a.columns:
+            COLUMN_SOURCE[canon] = canon
+            continue
+        hit = present.get(_norm_col(canon))
+        if hit is None:
+            for alt in IDENTITY_SYNONYMS.get(canon, []):
+                hit = present.get(_norm_col(alt))
+                if hit is not None:
+                    break
+        if hit is None:
+            b, _, t = _split_col(canon)
+            cands = by_base.get((b, t), [])
+            if cands:
+                hit = sorted(cands, key=rank)[0][1]
+        if hit is not None:
+            a[canon] = a[hit]
+            COLUMN_SOURCE[canon] = hit
+            swapped.append((canon, hit))
+        else:
+            a[canon] = np.nan
+            MISSING_COLS.add(canon)
+
+    lost = [c for c in ESSENTIAL_COLS if c in MISSING_COLS]
+    if lost:
+        sys.exit(f"\n[ERROR] The All Stocks CSV is missing columns the script cannot run "
+                 f"without: {lost}\n        Columns it does have: {list(a.columns)}\n"
+                 f"        Fix: add them back in the TradingView screener and export again.\n")
+
+    n_total = len(canonical_columns())
+    print(f'      column check: {n_total - len(swapped) - len(MISSING_COLS)} of {n_total} '
+          f'found as named, {len(swapped)} matched under a new name, '
+          f'{len(MISSING_COLS)} missing')
+    for canon, hit in swapped:
+        print(f"        using '{hit}'  for  '{canon}'")
+    for canon in sorted(MISSING_COLS):
+        uses = [FILTER_SPECS[k][2] for k in FILTER_SPECS if FILTER_SPECS[k][0] == canon]
+        tail = f' - the {uses[0]} filter is switched off this run' if uses else ''
+        print(f"        [WARN] not in this export: '{canon}'{tail}")
+
+    # relabel the deep feed periods so the app shows what the numbers really cover
+    for src, key in DEEP_FEED_FIELDS:
+        if DEEP_FEED_PERIODS.get(key) in ('TTM', 'Annual', 'Quarterly') and period_of(src):
+            DEEP_FEED_PERIODS[key] = period_of(src)
+    return a
+
+
 def load_universe(path):
     a = pd.read_csv(path)
-    for col in ('Altman Z-score, Trailing 12 months', 'Piotroski F-score, Trailing 12 months'):
-        if col not in a.columns:
-            a[col] = np.nan
-            print(f"[WARN] '{col}' is not in the CSV. Any filter on that column is ignored.")
+    a.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in a.columns]
+    a = resolve_columns(a)
     a['_sym'] = a['Symbol'].astype(str).str.strip()
     a['_norm'] = a['Description'].map(norm_name)
     a['_us'] = (a['Country or region of registration'] == 'United States').astype(int)
@@ -1138,7 +1282,7 @@ def dataroma_needs_scrape(data_dir):
                 if classify(p) == 'marquee']
     if not existing:
         return True, 'no dataroma CSV in the folder'
-    newest = max(existing, key=os.path.getmtime)
+    newest = max(existing, key=file_rank)
     age = (datetime.date.today() - file_date(newest)).days
     if age > DATAROMA_MAX_AGE_DAYS:
         return True, f'{os.path.basename(newest)} is {age} days old'
@@ -1281,6 +1425,8 @@ def screen(df, gics):
         if val is None:
             continue
         col, direction, label = FILTER_SPECS[key]
+        if col in MISSING_COLS:
+            continue
         series = pd.to_numeric(df[col], errors='coerce')
         ok = (series >= val) if direction == 'min' else (series <= val)
         if not BLANK_FAILS:
@@ -1374,17 +1520,17 @@ def metric_groups(prefix=''):
             ('ROA %', p + 'Return on assets %, Trailing 12 months', PCT),
             ('ROE %', p + 'Return on equity %, Trailing 12 months', PCT)]),
         ('Profitability Margins', '2F855A', [
-            ('Gross Margin %', p + 'Gross margin %, Annual', PCT),
-            ('Operating Margin %', p + 'Operating margin %, Annual', PCT),
-            ('Net Margin %', p + 'Net margin %, Annual', PCT),
-            ('FCF Margin %', p + 'Free cash flow margin %, Annual', PCT)]),
-        ('Cash Flow', '116466', [('Free Cash Flow', p + 'Free cash flow, Annual', BIG),
-                                 ('FCF Ccy', p + 'Free cash flow, Annual - Currency', TXT)]),
+            ('Gross Margin %', p + 'Gross margin %, Trailing 12 months', PCT),
+            ('Operating Margin %', p + 'Operating margin %, Trailing 12 months', PCT),
+            ('Net Margin %', p + 'Net margin %, Trailing 12 months', PCT),
+            ('FCF Margin %', p + 'Free cash flow margin %, Trailing 12 months', PCT)]),
+        ('Cash Flow', '116466', [('Free Cash Flow', p + 'Free cash flow, Trailing 12 months', BIG),
+                                 ('FCF Ccy', p + 'Free cash flow, Trailing 12 months - Currency', TXT)]),
         ('Balance Sheet & Solvency', '7B3F00', [
             ('Current Ratio', p + 'Current ratio, Quarterly', X),
             ('Debt / Equity', p + 'Debt to equity ratio, Quarterly', X),
-            ('Interest Coverage', p + 'Interest coverage, Annual', X),
-            ('EBITDA Int. Coverage', p + 'EBITDA interest coverage, Annual', X)]),
+            ('Interest Coverage', p + 'Interest coverage, Trailing 12 months', X),
+            ('EBITDA Int. Coverage', p + 'EBITDA interest coverage, Trailing 12 months', X)]),
         ('Quality & Distress Scores', PLUM, [
             ('Altman Z-Score', p + 'Altman Z-score, Trailing 12 months', Z),
             ('Piotroski F-Score', p + 'Piotroski F-score, Trailing 12 months', F)]),
@@ -1429,9 +1575,12 @@ def sheet_readme(wb, n_matched, n_unid, n_all, screen_counts, stamp):
             ('Superinvestor Ownership', 'Aggregate portfolio weight, number of investors holding, largest single weight, average hold price and 52-week context.'),
             ('Size', 'Market capitalisation and its reporting currency.'),
             ('Valuation', 'P/E trailing twelve months and forward P/E.'),
-            ('Return Ratios', 'ROIC, ROCE, ROA and ROE - all trailing twelve months.'),
-            ('Profitability Margins', 'Gross, operating, net and free cash flow margins - annual.'),
-            ('Cash Flow', 'Annual free cash flow in the reporting currency.'),
+            ('Return Ratios', 'ROIC, ROCE, ROA and ROE, ' + period_words(
+                'Return on equity %, Trailing 12 months', 'trailing twelve months') + '.'),
+            ('Profitability Margins', 'Gross, operating, net and free cash flow margins, '
+                + period_words('Gross margin %, Trailing 12 months', 'trailing twelve months') + '.'),
+            ('Cash Flow', 'Free cash flow in the reporting currency, ' + period_words(
+                'Free cash flow, Trailing 12 months', 'trailing twelve months') + '.'),
             ('Balance Sheet & Solvency', 'Current ratio, debt to equity, interest coverage and EBITDA interest coverage.'),
             ('Quality & Distress Scores', 'Altman Z-score for bankruptcy risk - below 1.8 is distress, above 3.0 is safe, and the bands do not apply to banks or insurers. Piotroski F-score out of 9 for fundamental momentum.'),
             ('Price Performance', 'Year to date, six month and one year performance, plus the five year figure both cumulative and annualised.'),
@@ -1529,8 +1678,8 @@ def sheet_sector_summary(wb, matched, pos):
              ('Avg P/E (TTM)', 'A_Price to earnings ratio'),
              ('Avg ROE %', 'A_Return on equity %, Trailing 12 months'),
              ('Avg ROIC %', 'A_Return on invested capital %, Trailing 12 months'),
-             ('Avg Operating Margin %', 'A_Operating margin %, Annual'),
-             ('Avg Net Margin %', 'A_Net margin %, Annual'),
+             ('Avg Operating Margin %', 'A_Operating margin %, Trailing 12 months'),
+             ('Avg Net Margin %', 'A_Net margin %, Trailing 12 months'),
              ('Avg 1Y Performance %', 'A_Performance %, 1 year'),
              ('Avg 5Y Annualised %', '__CAGR5__'),
              ('Avg Altman Z (-50 to 100 band)', 'A_Altman Z-score, Trailing 12 months'),
@@ -1774,15 +1923,15 @@ DEEP_FEED_FIELDS = [
     ('Return on capital employed %, Trailing 12 months', 'roce'),
     ('Return on assets %, Trailing 12 months', 'roa'),
     ('Return on equity %, Trailing 12 months', 'roe'),
-    ('Gross margin %, Annual', 'gross_margin'),
-    ('Operating margin %, Annual', 'op_margin'),
-    ('Net margin %, Annual', 'net_margin'),
-    ('Free cash flow margin %, Annual', 'fcf_margin'),
-    ('Free cash flow, Annual', 'fcf'), ('Free cash flow, Annual - Currency', 'fcf_ccy'),
+    ('Gross margin %, Trailing 12 months', 'gross_margin'),
+    ('Operating margin %, Trailing 12 months', 'op_margin'),
+    ('Net margin %, Trailing 12 months', 'net_margin'),
+    ('Free cash flow margin %, Trailing 12 months', 'fcf_margin'),
+    ('Free cash flow, Trailing 12 months', 'fcf'), ('Free cash flow, Trailing 12 months - Currency', 'fcf_ccy'),
     ('Current ratio, Quarterly', 'current_ratio'),
     ('Debt to equity ratio, Quarterly', 'debt_equity'),
-    ('Interest coverage, Annual', 'interest_cover'),
-    ('EBITDA interest coverage, Annual', 'ebitda_cover'),
+    ('Interest coverage, Trailing 12 months', 'interest_cover'),
+    ('EBITDA interest coverage, Trailing 12 months', 'ebitda_cover'),
     ('Altman Z-score, Trailing 12 months', 'altman_z'),
     ('Piotroski F-score, Trailing 12 months', 'piotroski_f'),
     ('Performance %, Year to date', 'perf_ytd'),
@@ -1798,10 +1947,10 @@ DEEP_FEED_FIELDS = [
 # nobody compares a trailing-twelve-month return against an annual margin by accident
 DEEP_FEED_PERIODS = {
     'pe': 'TTM', 'fpe': 'Forward', 'roic': 'TTM', 'roce': 'TTM', 'roa': 'TTM', 'roe': 'TTM',
-    'gross_margin': 'Annual', 'op_margin': 'Annual', 'net_margin': 'Annual',
-    'fcf_margin': 'Annual', 'fcf': 'Annual',
+    'gross_margin': 'TTM', 'op_margin': 'TTM', 'net_margin': 'TTM',
+    'fcf_margin': 'TTM', 'fcf': 'TTM',
     'current_ratio': 'Quarterly', 'debt_equity': 'Quarterly',
-    'interest_cover': 'Annual', 'ebitda_cover': 'Annual',
+    'interest_cover': 'TTM', 'ebitda_cover': 'TTM',
     'altman_z': 'TTM', 'piotroski_f': 'TTM',
     'mcap': 'Current', 'price': 'Current', 'ema50': 'Current', 'ema200': 'Current',
     'rsi14': 'Current',
@@ -1904,10 +2053,10 @@ HTML_COLS = [('Symbol', 'sym'), ('Description', 'name'), ('GICS Sector', 'gics')
              ('Return on capital employed %, Trailing 12 months', 'roce'),
              ('Return on assets %, Trailing 12 months', 'roa'),
              ('Return on equity %, Trailing 12 months', 'roe'),
-             ('Gross margin %, Annual', 'gm'), ('Operating margin %, Annual', 'om'),
-             ('Net margin %, Annual', 'nm'), ('Free cash flow margin %, Annual', 'fcfm'),
+             ('Gross margin %, Trailing 12 months', 'gm'), ('Operating margin %, Trailing 12 months', 'om'),
+             ('Net margin %, Trailing 12 months', 'nm'), ('Free cash flow margin %, Trailing 12 months', 'fcfm'),
              ('Current ratio, Quarterly', 'cr'), ('Debt to equity ratio, Quarterly', 'de'),
-             ('Interest coverage, Annual', 'ic'),
+             ('Interest coverage, Trailing 12 months', 'ic'),
              ('Altman Z-score, Trailing 12 months', 'az'),
              ('Piotroski F-score, Trailing 12 months', 'pf'),
              ('Performance %, Year to date', 'ytd'),
