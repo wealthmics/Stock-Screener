@@ -2273,6 +2273,10 @@ button,input,select{font:inherit;color:inherit}
 .dates{display:flex;gap:22px;font-size:12.5px;color:#c9d3e3}
 .dates div{display:flex;flex-direction:column;gap:1px}
 .dates b{color:#fff;font-weight:600;font-size:13.5px}
+.toplink{align-self:center;color:#fff;font-weight:600;font-size:13px;text-decoration:none;border:1px solid #5d7299;
+ border-radius:6px;padding:7px 12px;margin-right:6px}
+.toplink:hover{background:#24406e}
+.toplink[hidden]{display:none}
 
 /* ---------- page grid */
 .page{max-width:1680px;margin:0 auto;padding:20px 24px 40px;display:grid;
@@ -2416,6 +2420,7 @@ td.na{color:#8a96ad}
 <header class="top"><div class="in">
  <div class="brand"><span class="org">MICS International</span><h1>Global equity screener</h1></div>
  <div class="dates">
+  <a class="toplink" id="idx-link" href="#" target="_blank" rel="noopener" hidden>Index analysis</a>
   <div><span>Company data</span><b id="d-data"></b></div>
   <div><span>Superinvestor holdings</span><b id="d-mq"></b></div>
  </div>
@@ -2999,6 +3004,7 @@ function syncControls(){
 function init(){
   $('d-data').textContent=DATA.stamp.data; $('d-mq').textContent=DATA.stamp.marquee;
   if(DATA.xlsxUrl){ const a=$('xlsx'); a.href=DATA.xlsxUrl; a.style.display=''; }
+  if(DATA.deepUrl){ const l=$('idx-link'); l.href=DATA.deepUrl+'/?view=indexes'; l.hidden=false; }
   if(DATA.deepUrl) $('hint').textContent='Click a ticker to open its full analysis. Click a column heading to sort. Exports always contain every company that passes, not only this page.';
   buildSectors(); buildCriteria();
   if(!restore()) defaults();
