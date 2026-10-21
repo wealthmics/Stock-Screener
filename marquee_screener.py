@@ -114,7 +114,7 @@ THE INTERACTIVE HTML
 =====================================================================================
 """
 
-import argparse, datetime, glob, json, os, re, sys, time
+import argparse, datetime, glob, json, math, os, re, sys, time
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook
@@ -151,7 +151,9 @@ DATAROMA_PAGES = 15        # the scraper stops early on its own if a page comes 
 # Which threshold set to run.
 #   'base'   every sector uses the identical DEFAULT_FILTERS values (SECTOR_OVERRIDES).
 #            This is the starting point - one rule for the whole market.
-#   'tuned'  uses SECTOR_PRESETS instead. Those thresholds are calibrated against the
+#   'tuned'  every bar is computed from the data on each run, see [3b] SECTOR-TUNED RULES.
+#            (SECTOR_PRESETS below is the older hand-set version, kept for reference only.)
+#            Those older thresholds were calibrated against the
 #            actual marquee holdings in each sector - each bar sits near that sector's
 #            median - and ROIC and ROCE are switched off everywhere as redundant with
 #            ROE and ROA. This is what produces a workable count in every sector.
@@ -779,6 +781,113 @@ SECTOR_PRESETS = {
 
 
 # =====================================================================================
+# [3b] SECTOR-TUNED RULES  ---  what 'tuned' means now
+# =====================================================================================
+# Every sector is judged only on the measures that describe that kind of business, and
+# every bar is set from the data on each run instead of by hand: a company has to beat the
+# median company of its own sector (TUNED_PERCENTILE = 50) on each measure that applies.
+# Raise it to be stricter, lower it to be looser. The slider on the web page moves the same
+# percentile, so tightening and loosening act evenly across every rule.
+#
+# Why these measures:
+#   ROIC is the cleanest test of business quality because borrowing cannot inflate it, so
+#   it replaces ROE and ROA for ordinary companies. Banks and insurers are judged on ROE and
+#   ROA instead, because for them debt is the raw material. Operating and free cash flow
+#   margin say what net margin says and more, so net margin is kept only for financials.
+#   Altman Z, current ratio and gross margin do not fit banks, REITs or utilities.
+TUNED_PERCENTILE = 50
+MCAP_FLOOR = 300e6           # US dollars. A fixed liquidity floor, never moved by the slider.
+
+_CORE = ['pe_max', 'roic_min', 'op_margin_min', 'fcf_margin_min', 'de_max', 'int_cov_min',
+         'altman_min', 'piotroski_min', 'mcap_min']
+SECTOR_RULES = {
+    'All Sectors'            : _CORE,
+    'Information Technology' : _CORE,
+    'Communication Services' : _CORE,
+    'Consumer Discretionary' : _CORE,
+    'Consumer Staples'       : _CORE,
+    'Health Care'            : _CORE,
+    'Energy'                 : _CORE,
+    'Materials'              : _CORE,
+    'Industrials'            : _CORE,
+    'Financials'             : ['pe_max', 'roe_min', 'roa_min', 'net_margin_min',
+                                'piotroski_min', 'mcap_min'],
+    'Real Estate'            : ['pe_max', 'roe_min', 'op_margin_min', 'de_max', 'int_cov_min',
+                                'piotroski_min', 'mcap_min'],
+    'Utilities'              : ['pe_max', 'roe_min', 'op_margin_min', 'int_cov_min',
+                                'piotroski_min', 'mcap_min'],
+}
+# Per rule shifts of the percentile, in points. Earnings in energy, materials and property
+# swing with the cycle, so a low P/E at the top of the cycle misleads: their P/E bar sits
+# 15 points looser than the rest.
+RULE_TARGET_SHIFT = {
+    ('Energy', 'pe_max'): -15, ('Materials', 'pe_max'): -15, ('Real Estate', 'pe_max'): -15,
+}
+# Shown on the web page when a rule is not used for a sector, so the choice is visible.
+RULE_NOT_USED_WHY = {
+    'roe_min'          : 'ROIC is used instead; borrowing can inflate ROE',
+    'roa_min'          : 'used only for banks and insurers',
+    'roce_min'         : 'ROIC is used instead; the two say the same thing',
+    'roic_min'         : 'not meaningful for lenders, landlords and regulated utilities',
+    'gross_margin_min' : 'operating and free cash flow margin say more',
+    'net_margin_min'   : 'operating and free cash flow margin say more',
+    'op_margin_min'    : 'a bank has no operating margin in the usual sense',
+    'fcf_margin_min'   : 'capital spending or lending makes it meaningless here',
+    'current_ratio_min': 'interest cover and debt tell the story better',
+    'de_max'           : 'debt is the raw material of a bank, and normal for a utility',
+    'int_cov_min'      : 'a bank\'s interest is its cost of goods',
+    'altman_min'       : 'the model was not built for this kind of balance sheet',
+    'pe_max'           : '',
+    'piotroski_min'    : '',
+    'mcap_min'         : '',
+}
+# Hand overrides on top of the computed bars, written as values: {'Energy': {'pe_max': 12}}
+TUNED_OVERRIDES = {}
+
+COMPUTED_TUNED = {}          # filled in at run time from the universe
+DISTRIBUTIONS = {}           # 21 point distribution per sector and measure, for the web page
+POSITIVE_ONLY = {'pe_max', 'de_max'}   # a loss or negative equity never passes these
+
+
+def _measure(df, key):
+    s = pd.to_numeric(df[FILTER_SPECS[key][0]], errors='coerce').dropna()
+    if key in POSITIVE_ONLY:
+        s = s[s > 0]
+    return s
+
+
+def compute_tuned(universe):
+    """Set every tuned bar from the data: the TUNED_PERCENTILE of each sector."""
+    COMPUTED_TUNED.clear()
+    DISTRIBUTIONS.clear()
+    for sector in [ALL_LABEL] + list(SECTOR_MAP):
+        sub = universe if sector == ALL_LABEL else universe[universe['GICS Sector'] == sector]
+        dist, block = {}, {}
+        for key in DEFAULT_FILTERS:
+            s = _measure(sub, key)
+            if len(s) >= 20:
+                dist[key] = [round(float(s.quantile(q / 20)), 6) for q in range(21)]
+            if key not in SECTOR_RULES.get(sector, _CORE):
+                block[key] = None
+                continue
+            if key == 'mcap_min':
+                block[key] = MCAP_FLOOR
+                continue
+            if len(s) < 20:
+                block[key] = None
+                continue
+            t = TUNED_PERCENTILE + RULE_TARGET_SHIFT.get((sector, key), 0)
+            q = (1 - t / 100) if FILTER_SPECS[key][1] == 'max' else t / 100
+            v = float(s.quantile(min(max(q, 0.0), 1.0)))
+            if key == 'piotroski_min':
+                v = float(math.ceil(v))
+            block[key] = round(v, 4)
+        block.update(TUNED_OVERRIDES.get(sector, {}))
+        COMPUTED_TUNED[sector] = block
+        DISTRIBUTIONS[sector] = dist
+
+
+# =====================================================================================
 # [5] GICS  <-  TradingView SECTOR MAPPING
 # =====================================================================================
 SECTOR_MAP = {
@@ -1054,8 +1163,14 @@ IDENTITY_SYNONYMS = {
     'Country or region of registration': ['Country', 'Country or region'],
     'Market capitalization': ['Market cap'],
     'Market capitalization - Currency': ['Market cap - Currency'],
+    '52 week high': ['High, 52 weeks', '52 Week High', '52-week high', 'Price - 52 week high',
+                     'High 52 weeks', '52 weeks high'],
+    'Relative volume': ['Relative volume, 10 days', 'Relative Volume', 'Relative volume 10 days',
+                        'Relative volume at time'],
 }
 # without these the build cannot work at all, so their absence stops the run
+OPTIONAL_COLS = {'Performance %, 1 month', 'Performance %, 3 months', '52 week high',
+                 'Relative volume'}
 ESSENTIAL_COLS = ['Symbol', 'Description', 'Country or region of registration',
                   'Sector', 'Industry', 'Price', 'Market capitalization']
 COLUMN_SOURCE = {}     # name the script uses -> CSV column it was actually read from
@@ -1124,8 +1239,11 @@ def resolve_columns(a):
                 if hit is not None:
                     break
         if hit is None:
-            b, _, t = _split_col(canon)
-            cands = by_base.get((b, t), [])
+            b, p0, t = _split_col(canon)
+            # only reporting periods are interchangeable (TTM, annual, quarterly). A 1 month
+            # return is not a stand-in for a year to date return, so those never swap.
+            cands = [c for c in by_base.get((b, t), []) if c[0] in PERIOD_PREFERENCE] \
+                if p0 in PERIOD_PREFERENCE else []
             if cands:
                 hit = sorted(cands, key=rank)[0][1]
         if hit is not None:
@@ -1145,10 +1263,14 @@ def resolve_columns(a):
     n_total = len(canonical_columns())
     print(f'      column check: {n_total - len(swapped) - len(MISSING_COLS)} of {n_total} '
           f'found as named, {len(swapped)} matched under a new name, '
-          f'{len(MISSING_COLS)} missing')
+          f'{len(MISSING_COLS - OPTIONAL_COLS)} missing')
     for canon, hit in swapped:
         print(f"        using '{hit}'  for  '{canon}'")
-    for canon in sorted(MISSING_COLS):
+    optional_missing = sorted(MISSING_COLS & OPTIONAL_COLS)
+    if optional_missing:
+        print(f'        optional momentum columns not in this export: {optional_missing}. '
+              f'Add them in TradingView to switch those momentum signals on.')
+    for canon in sorted(MISSING_COLS - OPTIONAL_COLS):
         uses = [FILTER_SPECS[k][2] for k in FILTER_SPECS if FILTER_SPECS[k][0] == canon]
         tail = f' - the {uses[0]} filter is switched off this run' if uses else ''
         print(f"        [WARN] not in this export: '{canon}'{tail}")
@@ -1460,7 +1582,7 @@ def active_set():
     """The threshold dictionary THRESHOLD_MODE points at."""
     if THRESHOLD_MODE not in ('base', 'tuned'):
         sys.exit(f"[ERROR] THRESHOLD_MODE must be 'base' or 'tuned', not {THRESHOLD_MODE!r}.")
-    return SECTOR_PRESETS if THRESHOLD_MODE == 'tuned' else SECTOR_OVERRIDES
+    return COMPUTED_TUNED if THRESHOLD_MODE == 'tuned' else SECTOR_OVERRIDES
 
 
 def sector_filters(gics):
@@ -1495,6 +1617,8 @@ def screen(df, gics):
             continue
         series = pd.to_numeric(df[col], errors='coerce')
         ok = (series >= val) if direction == 'min' else (series <= val)
+        if key in POSITIVE_ONLY:          # a loss-making P/E or negative equity is not cheap
+            ok = ok & (series > 0)
         if not BLANK_FAILS:
             ok = ok | series.isna()
         mask &= ok.fillna(False)
@@ -1666,7 +1790,7 @@ def sheet_readme(wb, n_matched, n_unid, n_all, screen_counts, stamp):
             ('Active set this run', f"THRESHOLD_MODE = '{THRESHOLD_MODE}'. See the Screen Settings sheet for the exact numbers applied to each sector."),
             ('Blank policy', f'BLANK_FAILS is currently {BLANK_FAILS}. ' + ('Missing values are ignored, so a stock is judged only on the metrics it reports.' if not BLANK_FAILS else 'Any stock missing a screened metric is rejected, which is strict given Altman covers about three quarters of the universe.') + f' A stock must also report at least {int(MIN_DATA_COVERAGE*100)}% of the screened metrics to qualify, so thinly covered names cannot pass by default.'),
             ('Passing counts this run', passes),
-            ('To change a threshold', "Open marquee_screener.py and edit the sector block inside SECTOR_OVERRIDES (base) or SECTOR_PRESETS (tuned), then run the script again. Sector_Screener.html lets you test values live and copy a ready-made block."),
+            ('To change a threshold', "Open marquee_screener.py and edit SECTOR_OVERRIDES (base), or for the tuned set change TUNED_PERCENTILE, SECTOR_RULES or TUNED_OVERRIDES, then run the script again. Sector_Screener.html lets you test values live and copy a ready-made block."),
         ]),
         ('Reading the numbers', [
             ('Ratios are currency neutral', 'P/E, returns, margins and coverage compare directly across rows regardless of listing currency.'),
@@ -1824,7 +1948,7 @@ def sheet_screen_settings(wb, screen_counts, stamp):
     ws.sheet_view.showGridLines = False
     ws['A1'] = f"Active screening thresholds by GICS sector   |   updated as of {stamp['data']}"
     ws['A1'].font = Font(name='Arial', size=13, bold=True, color=NAVY)
-    src = 'SECTOR_PRESETS (sector-tuned set)' if THRESHOLD_MODE == 'tuned' else \
+    src = (f'the data: each bar is the {TUNED_PERCENTILE}th percentile of its sector (sector-tuned set)') if THRESHOLD_MODE == 'tuned' else \
           'SECTOR_OVERRIDES (base set, every sector identical)'
     ws['A2'] = (f'THRESHOLD_MODE = {THRESHOLD_MODE!r}, so these come from {src}. Edit that block in '
                 'marquee_screener.py and run again. "off" means the filter is not applied, and '
@@ -1883,7 +2007,7 @@ def sheet_sector_screen(wb, gics, passed, rule_text, universe_label, stamp):
     ws['A1'].font = Font(name='Arial', size=13, bold=True, color=NAVY)
     ws['A2'] = 'Filters: ' + (rule_text or 'no filters applied')
     ws['A2'].font = Font(name='Arial', size=9, italic=True, color='595959')
-    blk = 'SECTOR_PRESETS' if THRESHOLD_MODE == 'tuned' else 'SECTOR_OVERRIDES'
+    blk = 'TUNED_OVERRIDES' if THRESHOLD_MODE == 'tuned' else 'SECTOR_OVERRIDES'
     ws['A3'] = (f"{len(passed)} names cleared these filters (THRESHOLD_MODE = '{THRESHOLD_MODE}'). "
                 f"To change a threshold, edit {blk}['{gics}'] in marquee_screener.py and run again. "
                 f"To relax every sector at once, set THRESHOLD_MODE = 'tuned'.")
@@ -2163,7 +2287,14 @@ HTML_COLS = [('Symbol', 'sym'), ('Description', 'name'), ('GICS Sector', 'gics')
              ('Performance %, Year to date', 'ytd'),
              ('Performance %, 1 year', 'y1'), ('Performance %, 5 years', 'y5'),
              ('Price', 'px'), ('Price - Currency', 'ccy'),
-             ('Industry', 'ind'), ('Investors Holding', 'inv')]
+             ('Industry', 'ind'), ('Investors Holding', 'inv'),
+             ('Exponential moving average, 50, 1 day', 'e50'),
+             ('Exponential moving average, 200, 1 day', 'e200'),
+             ('Relative strength index, 14, 1 day', 'rsi'),
+             ('Performance %, 6 months', 'm6'),
+             # optional: add these to the TradingView export to switch on more momentum signals
+             ('Performance %, 1 month', 'm1'), ('Performance %, 3 months', 'm3'),
+             ('52 week high', 'h52'), ('Relative volume', 'rv')]
 
 # HTML filter key -> (data field, direction, label)
 HTML_FILTERS = [(k, HTML_KEY, FILTER_SPECS[k][1], FILTER_SPECS[k][2]) for k, HTML_KEY in [
@@ -2180,10 +2311,13 @@ def build_html(a2, out_path, stamp, split=False):
     # industry names repeat thousands of times, so each row carries an index into one list
     industries = sorted({str(x).strip() for x in a2['Industry'].dropna() if str(x).strip()})
     ind_pos = {name: i for i, name in enumerate(industries)}
+    # optional momentum columns that this export does not carry are left out of the page
+    cols = [(src, k) for src, k in HTML_COLS
+            if not (src in OPTIONAL_COLS and pd.to_numeric(a2.get(src), errors='coerce').notna().sum() == 0)]
     rows = []
     for _, r in a2.iterrows():
         rec = []
-        for src, _ in HTML_COLS:
+        for src, _ in cols:
             v = r.get(src, None)
             if src == 'GICS Sector':
                 v = None if pd.isna(v) else list(SECTOR_MAP).index(v)
@@ -2202,7 +2336,7 @@ def build_html(a2, out_path, stamp, split=False):
             rec.append(v)
         rows.append(rec)
     payload = {
-        'fields': [k for _, k in HTML_COLS],
+        'fields': [k for _, k in cols],
         'rows': rows,
         'sectors': list(SECTOR_MAP.keys()),
         'industries': industries,
@@ -2210,7 +2344,14 @@ def build_html(a2, out_path, stamp, split=False):
         'allLabel': ALL_LABEL,
         'defaults': DEFAULT_FILTERS,
         'base': SECTOR_OVERRIDES,
-        'tuned': SECTOR_PRESETS,
+        'tuned': COMPUTED_TUNED,
+        'dist': DISTRIBUTIONS,
+        'tunedPct': TUNED_PERCENTILE,
+        'ruleSets': SECTOR_RULES,
+        'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
+        'notUsedWhy': RULE_NOT_USED_WHY,
+        'fixed': {'mcap_min': MCAP_FLOOR},
+        'positiveOnly': sorted(POSITIVE_ONLY),
         'mode': THRESHOLD_MODE,
         'perSector': ALL_SECTORS_USES_SECTOR_RULES,
         'filters': [{'key': k, 'field': f, 'dir': d, 'label': l} for k, f, d, l in HTML_FILTERS],
@@ -2415,6 +2556,27 @@ td.na{color:#8a96ad}
 .pager button:disabled{opacity:.4;cursor:default}
 .pager .gap{padding:5px 2px;color:var(--navy-2)}
 .note{font-size:12px;color:var(--navy-2);padding:0 2px;line-height:1.55;margin:0}
+/* rules by sector */
+dialog#mx{border:0;border-radius:10px;padding:20px 22px;max-width:min(1200px,94vw);width:100%;
+ box-shadow:0 20px 60px rgba(23,43,77,.35)}
+dialog#mx::backdrop{background:rgba(23,43,77,.45)}
+.mx-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.mx-head h2{margin:0;color:var(--navy);font-size:18px}
+.mx-wrap{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:8px}
+#mx-t th{cursor:default;white-space:normal;min-width:92px;vertical-align:bottom}
+#mx-t th:first-child,#mx-t td:first-child{position:sticky;left:0;background:#fafbfd;text-align:left;z-index:3;min-width:200px}
+#mx-t td:first-child{background:#fff;font-weight:600;color:var(--navy)}
+#mx-t td.off{color:#8a96ad;font-style:italic}
+#mx-t td.mx-g{background:var(--pale)!important;color:var(--gold);font-weight:650;font-size:12px}
+/* momentum chips */
+.mo{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.mo.early{background:#e3f1e8;color:var(--up)}
+.mo.established{background:var(--pale);color:var(--navy)}
+.mo.extended{background:#fbf0d6;color:#8a6400}
+.mo.neutral{background:#f1f3f7;color:var(--navy-2)}
+.mo.weak{background:#f7e4e4;color:var(--down)}
+.mo.na{background:none;color:#8a96ad;font-weight:500}
+.sig-na .t{opacity:.5}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
 <header class="top"><div class="in">
@@ -2463,11 +2625,22 @@ td.na{color:#8a96ad}
    <label class="tick"><input class="box" type="checkbox" id="strict"><span class="t">Exclude companies with missing figures</span></label>
    <div class="lab">Strictness</div>
    <div class="slider">
-    <div class="top-l"><span class="hint" style="margin:0">Moves every rule at once</span><output id="s-out" for="s-rng">As set</output></div>
-    <input type="range" id="s-rng" min="-25" max="50" step="5" value="0" list="s-ticks" aria-label="Strictness">
-    <datalist id="s-ticks"><option value="-25"></option><option value="0"></option><option value="25"></option><option value="50"></option></datalist>
+    <div class="top-l"><span class="hint" style="margin:0" id="s-sub">Moves every rule at once</span><output id="s-out" for="s-rng">As set</output></div>
+    <input type="range" id="s-rng" min="-20" max="30" step="5" value="0" list="s-ticks" aria-label="Strictness">
+    <datalist id="s-ticks"><option value="-20"></option><option value="0"></option><option value="30"></option></datalist>
     <div class="ends"><span>Stricter</span><span>Looser</span></div>
    </div>
+  </div>
+ </details>
+
+ <details class="blk" open>
+  <summary>Momentum <span class="sv" id="sv-mom"></span></summary>
+  <div class="bd">
+   <label class="tick"><input class="box" type="checkbox" id="mom-on"><span class="t">Filter by momentum stage</span></label>
+   <div id="mom-stages"></div>
+   <div class="lab">An early stage needs</div>
+   <div id="mom-sigs"></div>
+   <p class="hint" id="mom-hint"></p>
   </div>
  </details>
 
@@ -2475,7 +2648,8 @@ td.na{color:#8a96ad}
   <summary>Criteria <span class="sv" id="sv-crit"></span></summary>
   <div class="bd">
    <div class="row-acts"><button type="button" class="link" id="c-all">Tick all</button>
-    <button type="button" class="link" id="c-none">Untick all</button></div>
+    <button type="button" class="link" id="c-none">Untick all</button>
+    <button type="button" class="link" id="c-matrix" style="margin-left:auto">Rules by sector</button></div>
    <div id="crit"></div>
    <p class="hint">The red figure under each rule is how many companies that rule removes on its own, out of those in the ticked sectors and markets.</p>
   </div>
@@ -2524,11 +2698,16 @@ td.na{color:#8a96ad}
  <p class="note" id="hint">Click a column heading to sort. Exports always contain every company that passes, not only this page.</p>
 </main>
 </div>
+<dialog id="mx" aria-labelledby="mx-h">
+ <div class="mx-head"><h2 id="mx-h">Rules by sector</h2><button type="button" class="btn ghost" id="mx-close">Close</button></div>
+ <p class="hint" id="mx-sub" style="margin:0 0 12px"></p>
+ <div class="mx-wrap"><table id="mx-t"></table></div>
+</dialog>
 <script>
 let DATA, F, ROWS, SEC; const IX = {};
 const OTHER = -1;                       // rows whose TradingView sector maps to no GICS sector
 const $ = id => document.getElementById(id);
-const STORE = 'mics-screener-v2';
+const STORE = 'mics-screener-v3';
 
 // How each criterion is shown. 'short' is used in exports, 'name' in the sidebar.
 const CRIT = {
@@ -2551,7 +2730,8 @@ const CRIT = {
 const GROUPS = ['Valuation','Returns','Margins','Balance sheet','Quality scores','Size'];
 
 const S = { sel:new Set(), us:true, non:true, mq:false, q:'', preset:'tuned', per:true, strict:false,
-            loosen:0, on:{}, val:{}, page:1, perPage:50, sortKey:'mcap', sortDir:-1 };
+            loosen:0, on:{}, val:{}, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
+            momOn:false, stages:new Set(['early']), sigs:new Set(['trend','fresh','rsi','accel','room','vol']) };
 let cur = [], lastRuleKey = null;
 
 function boot(d){
@@ -2583,29 +2763,44 @@ const perOn = () => S.per && isMulti();
 const theSet = () => S.preset==='tuned'? DATA.tuned : DATA.base;
 const blockVals = g => Object.assign({}, DATA.defaults, theSet()[g]||{});
 const sectorsInPlay = () => realSel().map(i=>SEC[i]).concat(S.sel.has(OTHER)?[DATA.allLabel]:[]);
-function adj(v,dir){
-  if(!isNum(v)) return null;
-  const x=S.loosen/100, d=Math.abs(v)*x;
-  return +((dir==='min'? v-d : v+d).toFixed(4));
+// A bar moves along its sector's own distribution, so one step of the slider admits or
+// removes roughly the same share of companies on every rule, whatever its units.
+function distOf(g,key){ const d=(DATA.dist||{})[g]; return d && d[key]; }
+function pctOf(v,d){
+  if(v<=d[0]) return 0; if(v>=d[20]) return 100;
+  for(let i=0;i<20;i++){ if(v<=d[i+1]){ const w=d[i+1]-d[i]; return (i+(w?(v-d[i])/w:0))*5; } }
+  return 100;
 }
+function valAt(p,d){ p=Math.max(0,Math.min(100,p)); const x=p/5, i=Math.min(19,Math.floor(x)); return d[i]+(d[i+1]-d[i])*(x-i); }
+function adj(v,key,g){
+  if(!isNum(v)) return null;
+  if(!S.loosen || (DATA.fixed||{})[key]!==undefined) return v;
+  const d=distOf(g,key); if(!d) return v;
+  const f=DATA.filters.find(x=>x.key===key);
+  const p=pctOf(v,d), p2=f.dir==='min'? p-S.loosen : p+S.loosen;
+  let out=valAt(Math.max(1,Math.min(99,p2)),d);
+  if(key==='piotroski_min') out=Math.round(out);
+  return +out.toFixed(4);
+}
+const ruleSetFor = g => (DATA.ruleSets||{})[g] || (DATA.ruleSets||{})[DATA.allLabel] || DATA.filters.map(f=>f.key);
+const usedIn = (g,key) => S.preset!=='tuned' || ruleSetFor(g).includes(key);
 // the rules one company is judged on, after ticks and strictness
 function rulesFor(g){
-  const base = perOn()? blockVals(g) : S.val;
+  const per=perOn(), base = per? blockVals(g) : S.val;
+  const distSector = per? g : ruleSector();
   const out=[];
   for(const f of DATA.filters){
     if(!S.on[f.key]) continue;
-    const v=adj(base[f.key], f.dir);
+    const v=adj(base[f.key], f.key, distSector);
     if(v===null) continue;
-    out.push({key:f.key, field:f.field, dir:f.dir, val:v});
+    out.push({key:f.key, field:f.field, dir:f.dir, val:v, pos:(DATA.positiveOnly||[]).includes(f.key)});
   }
   return out;
 }
 function resetRules(){
   S.val = blockVals(ruleSector());
-  for(const f of DATA.filters){
-    // per-sector: every rule starts ticked, and a rule no ticked sector uses is shown disabled
-    S.on[f.key] = perOn()? true : isNum(S.val[f.key]);
-  }
+  // per-sector: every rule starts ticked, and a rule no ticked sector uses is shown disabled
+  for(const f of DATA.filters) S.on[f.key] = perOn()? true : isNum(S.val[f.key]);
 }
 function ruleKey(){ return [S.preset, ruleSector(), perOn()].join('|'); }
 
@@ -2665,20 +2860,21 @@ function syncCriteria(fails, poolN){
   let on=0, avail=0;
   document.querySelectorAll('#crit .crit').forEach(row=>{
     const k=row.dataset.k, f=DATA.filters.find(x=>x.key===k), m=CRIT[k];
-    const cb=row.querySelector('.box'), val=row.querySelector('.val');
+    const cb=row.querySelector('.box'), val=row.querySelector('.val'), lab=row.querySelector('.eff-l');
     const op='<span class="op">'+(f.dir==='min'?'&ge;':'&le;')+'</span>';
     let usable=true;
     if(per){
-      const vals=live.map(g=>blockVals(g)[k]).filter(isNum).map(v=>adj(v,f.dir));
+      const users=live.filter(g=>isNum(blockVals(g)[k]));
+      const vals=users.map(g=>adj(blockVals(g)[k],k,g)).filter(isNum);
       usable=vals.length>0;
-      if(!usable){ val.innerHTML='<span class="rng">not used in these sectors</span>'; }
+      if(!usable){ val.innerHTML='<span class="rng">not used</span>'; lab.textContent=DATA.notUsedWhy&&DATA.notUsedWhy[k]||''; }
       else{
         const lo=Math.min(...vals), hi=Math.max(...vals);
         const span = lo===hi? ruleNum(lo,m.u)
           : m.u==='of 9'? ruleNum(lo,'')+' to '+ruleNum(hi,m.u) : ruleNum(lo,m.u)+' to '+ruleNum(hi,m.u);
         val.innerHTML=op+'<span class="rng num">'+span+'</span>';
+        lab.textContent = live.length>1? 'used in '+users.length+' of '+live.length+' sectors' : '';
       }
-      row.querySelector('.eff-l').textContent = usable? (live.length>1? 'set by sector' : '') : '';
     } else {
       const raw=S.val[k], scale=m.scale||1;
       if(!val.querySelector('input')){
@@ -2687,23 +2883,123 @@ function syncCriteria(fails, poolN){
         val.querySelector('input').addEventListener('input',e=>{
           const t=e.target.value.trim();
           S.val[k]= t===''? null : parseFloat(t)*scale;
-          if(t!=='' && !S.on[k]){ S.on[k]=true; }
+          if(t!=='') S.on[k]=true;
           clearTimeout(inputTimer); inputTimer=setTimeout(()=>changed(),160);
         });
       }
       const inp=val.querySelector('input');
       if(document.activeElement!==inp) inp.value = isNum(raw)? +(raw/scale).toFixed(4) : '';
-      const eff=adj(raw,f.dir);
-      row.querySelector('.eff-l').textContent = (S.loosen && isNum(raw))? 'applied as '+ruleNum(eff,m.u) : '';
+      const eff=adj(raw,k,ruleSector());
+      const notUsed = S.preset==='tuned' && !isNum(raw) && !ruleSetFor(ruleSector()).includes(k);
+      lab.textContent = (S.loosen && isNum(raw) && eff!==raw)? 'applied as '+ruleNum(eff,m.u)
+        : notUsed? 'not used for this sector: '+(DATA.notUsedWhy[k]||'') : '';
     }
     cb.disabled=!usable;
     cb.checked=usable && !!S.on[k];
     row.classList.toggle('off', !cb.checked);
     const n=fails? fails[k]||0 : 0;
-    row.querySelector('.cut').textContent = (cb.checked && poolN)? (n? 'removes '+nf0.format(n) : 'removes none') : '';
+    row.querySelector('.cut').textContent = (cb.checked && poolN && usable)? (n? 'removes '+nf0.format(n) : 'removes none') : '';
     if(usable){ avail++; if(cb.checked) on++; }
   });
   $('sv-crit').textContent = on+' of '+avail+' on';
+}
+
+// ---------------------------------------------------------------- rules by sector
+function openMatrix(){
+  const live=sectorsInPlay(), per=perOn();
+  const cols = per? live : [isMulti()? DATA.allLabel : ruleSector()];
+  const name = g => g===DATA.allLabel? (per? 'Unclassified' : 'Every ticked sector') : g;
+  let html='<thead><tr><th scope="col">Rule</th>'+cols.map(g=>'<th scope="col">'+esc(name(g))+'</th>').join('')+'</tr></thead><tbody>';
+  for(const grp of GROUPS){
+    const fs=DATA.filters.filter(f=>CRIT[f.key]&&CRIT[f.key].g===grp);
+    if(!fs.length) continue;
+    html+='<tr><td class="mx-g" colspan="'+(cols.length+1)+'">'+esc(grp)+'</td></tr>';
+    for(const f of fs){
+      const m=CRIT[f.key];
+      html+='<tr><td>'+esc(m.name)+'</td>'+cols.map(g=>{
+        const base = per? blockVals(g) : S.val;
+        if(!S.on[f.key]) return '<td class="off">unticked</td>';
+        if(!isNum(base[f.key])){
+          const why = S.preset==='tuned' && !ruleSetFor(g).includes(f.key)? (DATA.notUsedWhy[f.key]||'') : 'no bar set';
+          return '<td class="off" title="'+esc(why)+'">not used</td>';
+        }
+        return '<td class="num">'+(f.dir==='min'?'&ge; ':'&le; ')+ruleNum(adj(base[f.key],f.key,per?g:ruleSector()),m.u)+'</td>';
+      }).join('')+'</tr>';
+    }
+  }
+  $('mx-t').innerHTML=html+'</tbody>';
+  $('mx-sub').textContent = (S.preset==='tuned'
+    ? 'Each bar starts at the '+ordinal(DATA.tunedPct)+' percentile of its own sector, computed from today\'s data'
+    : 'One set of bars, the same for every sector')
+    + (S.loosen? ', moved '+Math.abs(S.loosen)+' percentile points '+(S.loosen>0?'looser':'stricter')+' by the strictness slider' : '')
+    + '. Hover over "not used" to see why a rule does not apply.';
+  $('mx').showModal();
+}
+function ordinal(n){ const s=['th','st','nd','rd'], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
+
+// ---------------------------------------------------------------- momentum
+// Computed from the TradingView snapshot, so it describes where the trend stands today.
+const SIGS = [
+  {k:'trend', name:'Trend turning up', need:['e50','e200','px'], hint:'Price above its 50 day average, and the 50 day close to or just above the 200 day'},
+  {k:'fresh', name:'Not yet stretched', need:['e50','px'], hint:'Price no more than 15% above its 50 day average'},
+  {k:'rsi',   name:'RSI between 50 and 70', need:['rsi'], hint:'Strength without being overbought'},
+  {k:'accel', name:'Gaining pace', need:['m6','y1'], hint:'Recent return ahead of the longer pace (3 months against 6, or 6 against 12)'},
+  {k:'room',  name:'Room below its 52 week high', need:['h52','px'], hint:'5% to 25% below the 52 week high'},
+  {k:'vol',   name:'Volume confirms', need:['rv'], hint:'Relative volume at least 1.2 times normal'},
+];
+const STAGES = [
+  {k:'early', name:'Early: just turning up'}, {k:'established', name:'Established uptrend'},
+  {k:'extended', name:'Extended: far above its average'}, {k:'neutral', name:'No clear trend'},
+  {k:'weak', name:'Downtrend'},
+];
+let SIG_AVAIL = {};
+function momSignals(r){
+  const g=k=>r[IX[k]], px=g('px'), e50=g('e50'), e200=g('e200'), rsi=g('rsi');
+  const m3=IX.m3!==undefined? g('m3') : null, m6=g('m6'), y1=g('y1'), h52=IX.h52!==undefined? g('h52'):null, rv=IX.rv!==undefined? g('rv'):null;
+  const s={};
+  s.trend = isNum(px)&&isNum(e50)&&isNum(e200)? (px>e50 && e50>=0.97*e200 && e50<=1.10*e200) : null;
+  s.fresh = isNum(px)&&isNum(e50)? px<=e50*1.15 : null;
+  s.rsi = isNum(rsi)? (rsi>=50 && rsi<=70) : null;
+  s.accel = isNum(m3)&&isNum(m6)? (m3>0 && m3>m6/2) : (isNum(m6)&&isNum(y1)? (m6>0 && m6>y1/2) : null);
+  s.room = isNum(h52)&&isNum(px)&&h52>0? (px/h52-1<=-0.05 && px/h52-1>=-0.25) : null;
+  s.vol = isNum(rv)? rv>=1.2 : null;
+  return s;
+}
+function momStage(r){
+  const g=k=>r[IX[k]], px=g('px'), e50=g('e50'), e200=g('e200'), rsi=g('rsi');
+  if(!isNum(px)||!isNum(e50)||!isNum(e200)) return 'na';
+  const sg=r._sig||(r._sig=momSignals(r));
+  const need=[...S.sigs].filter(k=>SIG_AVAIL[k]);
+  if(need.length && need.every(k=>sg[k]===true)) return 'early';
+  if(px>e50*1.25 || (isNum(rsi)&&rsi>75&&px>e50)) return 'extended';
+  if(px<e50 && e50<e200) return 'weak';
+  if(px>e50 && e50>e200*1.10) return 'established';
+  return 'neutral';
+}
+function momScore(r){
+  const sg=r._sig||(r._sig=momSignals(r)), w={trend:25,fresh:15,rsi:20,accel:25,room:10,vol:5};
+  let got=0, tot=0;
+  for(const k in w){ if(sg[k]===null||sg[k]===undefined) continue; tot+=w[k]; if(sg[k]) got+=w[k]; }
+  return tot? Math.round(got/tot*100) : null;
+}
+const MOM_LABEL={early:'Early',established:'Established',extended:'Extended',neutral:'No trend',weak:'Downtrend',na:'n/a'};
+function buildMomentum(){
+  const has=k=>IX[k]!==undefined && ROWS.some(r=>isNum(r[IX[k]]));
+  SIG_AVAIL={}; for(const sg of SIGS) SIG_AVAIL[sg.k]=sg.need.every(has);
+  $('mom-sigs').innerHTML=SIGS.map(sg=>'<label class="tick'+(SIG_AVAIL[sg.k]?'':' dis sig-na')+'" title="'+esc(sg.hint)+'"><input class="box" type="checkbox" data-s="'+sg.k+'"'+(SIG_AVAIL[sg.k]?'':' disabled')+'><span class="t">'+esc(sg.name)+'</span>'+(SIG_AVAIL[sg.k]?'':'<span class="c">needs data</span>')+'</label>').join('');
+  $('mom-stages').innerHTML=STAGES.map(st=>'<label class="tick"><input class="box" type="checkbox" data-st="'+st.k+'"><span class="t">'+esc(st.name)+'</span><span class="c num" data-ct="'+st.k+'"></span></label>').join('');
+  $('mom-sigs').querySelectorAll('input').forEach(i=>i.onchange=e=>{ e.target.checked? S.sigs.add(e.target.dataset.s) : S.sigs.delete(e.target.dataset.s); changed(); });
+  $('mom-stages').querySelectorAll('input').forEach(i=>i.onchange=e=>{ e.target.checked? S.stages.add(e.target.dataset.st) : S.stages.delete(e.target.dataset.st); if(!S.momOn){ S.momOn=true; $('mom-on').checked=true; } changed(); });
+  const missing=SIGS.filter(sg=>!SIG_AVAIL[sg.k]).map(sg=>sg.name.toLowerCase());
+  $('mom-hint').textContent='Early means every ticked condition holds. Hover a condition to see its test.'
+    + (missing.length? ' Add 1 month, 3 month, 52 week high and relative volume columns to the TradingView export to switch on '+missing.join(' and ')+'.' : '');
+}
+function syncMomentum(counts){
+  $('mom-on').checked=S.momOn;
+  $('mom-stages').querySelectorAll('input').forEach(i=>i.checked=S.stages.has(i.dataset.st));
+  $('mom-sigs').querySelectorAll('input').forEach(i=>i.checked=S.sigs.has(i.dataset.s)&&!i.disabled);
+  $('mom-stages').querySelectorAll('[data-ct]').forEach(c=>c.textContent=nf0.format(counts[c.dataset.ct]||0));
+  $('sv-mom').textContent = S.momOn? [...S.stages].map(k=>MOM_LABEL[k]).join(', ')||'None' : 'Off';
 }
 
 // ---------------------------------------------------------------- the screen
@@ -2717,6 +3013,7 @@ function run(){
   const common = per? null : rulesFor(null);
   const cache={};
   const fails={}; DATA.filters.forEach(f=>fails[f.key]=0);
+  const stageCt={};
   let poolN=0, nUS=0, nNon=0, nMq=0;
   const out=[];
   for(const r of ROWS){
@@ -2736,15 +3033,18 @@ function run(){
       const v=r[IX[f.field]];
       if(v===null||v===undefined){ if(strict){ ok=false; fails[f.key]++; } continue; }
       reported++;
-      if(f.dir==='min'? v<f.val : v>f.val){ ok=false; fails[f.key]++; }
+      if((f.dir==='min'? v<f.val : v>f.val) || (f.pos && v<=0)){ ok=false; fails[f.key]++; }
     }
     // the same data-coverage guard the script applies, so counts match the workbook
     if(ok && !strict && rules.length && DATA.minCoverage>0 && reported/rules.length<DATA.minCoverage) ok=false;
-    if(ok) out.push(r);
+    if(!ok) continue;
+    const st=momStage(r); r._stage=st; stageCt[st]=(stageCt[st]||0)+1;
+    if(S.momOn && !S.stages.has(st)) continue;
+    out.push(r);
   }
   cur=out;
   $('c-us').textContent=nf0.format(nUS); $('c-non').textContent=nf0.format(nNon); $('c-mq').textContent=nf0.format(nMq);
-  syncSectors(); syncCriteria(fails, poolN); summary(); renderTable();
+  syncSectors(); syncCriteria(fails, poolN); syncMomentum(stageCt); summary(); renderTable();
 }
 
 function summary(){
@@ -2764,15 +3064,19 @@ function summary(){
   if(perOn()) bits.push('each company judged on its own sector\'s rules');
   else if(isMulti()) bits.push('one rule set applied to every ticked sector');
   else bits.push(ruleSector()+' rules');
-  if(S.loosen) bits.push((S.loosen>0? 'loosened by ' : 'tightened by ')+Math.abs(S.loosen)+'%');
+  if(S.loosen) bits.push((S.loosen>0? 'loosened by ' : 'tightened by ')+Math.abs(S.loosen)+' percentile points');
+  if(S.momOn) bits.push('momentum: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none'));
   const off=DATA.filters.filter(f=>!S.on[f.key]).length;
   const line=bits.join(', ')+'.'+(S.strict? ' Companies missing any screened figure are excluded.' : '');
   $('rule-line').textContent=line;
   $('sv-mkt').textContent=(S.us&&S.non? 'US and outside' : S.us? 'US only' : S.non? 'Outside US only' : 'None')+(S.mq?', held':'');
-  $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Same for all')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+'%' : '');
-  $('s-out').textContent= S.loosen===0? 'As set' : (S.loosen>0? 'Looser by ' : 'Stricter by ')+Math.abs(S.loosen)+'%';
+  $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Same for all')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+' pts' : '');
+  $('s-out').textContent= S.loosen===0? 'As set' : (S.loosen>0? 'Looser by ' : 'Stricter by ')+Math.abs(S.loosen)+' points';
+  $('s-sub').textContent = S.preset==='tuned'
+    ? 'Bars at the '+ordinal(DATA.tunedPct-S.loosen)+' percentile of each sector'
+    : 'Moves every bar within its sector\'s spread';
   $('preset-hint').textContent = S.preset==='tuned'
-    ? 'Each sector has bars set near the typical figures of its superinvestor holdings.'
+    ? 'Each sector uses only the measures that fit its business, and must beat the median company of its own sector on each. Bars are recomputed from the data on every run.'
     : 'One set of bars for every sector. Banks and utilities rarely pass it.';
   const multi=isMulti();
   $('per').disabled=!multi; $('per-wrap').classList.toggle('dis',!multi);
@@ -2794,6 +3098,8 @@ const COLS = [
   {k:'az',   h:'Altman Z', t:'n2'}, {k:'pf', h:'Piotroski', t:'pf'},
   {k:'y1',   h:'1 year', t:'p', signed:true}, {k:'cagr', h:'5 yr a year', t:'p', signed:true,
     get:r=>cagr(r[IX.y5])},
+  {k:'mom',  h:'Momentum', cls:'l', sort:r=>momScore(r), fmt:r=>{ const st=r._stage||momStage(r);
+    const sc=momScore(r); return '<span class="mo '+st+'" title="Momentum score '+(sc===null?'n/a':sc)+' of 100">'+MOM_LABEL[st]+'</span>'; }},
   {k:'px',   h:'Price', fmt:r=>isNum(r[IX.px])? nf2.format(r[IX.px])+' <span class="u">'+esc(r[IX.ccy]||'')+'</span>' : '-',
     sort:r=>r[IX.px]},
 ];
@@ -2900,20 +3206,22 @@ function exportData(){
   const rules = perOn()
     ? sectorsInPlay().map(g=>({sector: g===DATA.allLabel? 'Unclassified' : g, rules: asRules(rulesFor(g))}))
     : [{sector: isMulti()? 'Every ticked sector' : ruleSector(), rules: asRules(rulesFor(null))}];
-  const strictTxt = S.loosen? (S.loosen>0? ', loosened by ' : ', tightened by ')+Math.abs(S.loosen)+'%' : '';
+  const strictTxt = (S.loosen? (S.loosen>0? ', loosened by ' : ', tightened by ')+Math.abs(S.loosen)+' percentile points' : '')
+    + (S.momOn? '; momentum stage: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none') : '');
   const rows=cur.map(r=>({
     sym:r[IX.sym], name:r[IX.name], sector:SEC[r[IX.gics]]||'Unclassified',
     ind:(DATA.industries||[])[r[IX.ind]]||'', ctry:r[IX.ctry], mq:r[IX.mq]?1:0,
     inv:r[IX.inv], wt:r[IX.wt], mcap:r[IX.mcap], pe:r[IX.pe], fpe:r[IX.fpe], roe:r[IX.roe],
     roa:r[IX.roa], roic:r[IX.roic], roce:r[IX.roce], gm:r[IX.gm], om:r[IX.om], nm:r[IX.nm],
     fcfm:r[IX.fcfm], cr:r[IX.cr], de:r[IX.de], ic:r[IX.ic], az:r[IX.az], pf:r[IX.pf],
-    ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy]}));
+    ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy],
+    mom:MOM_LABEL[r._stage||momStage(r)], momScore:momScore(r)}));
   return {rows, meta:{
     asOf:DATA.stamp.data, marqueeAsOf:DATA.stamp.marquee, sectorOrder:SEC.concat(['Unclassified']),
     sectorsLabel:selectionLabel(),
     region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
     universe:S.mq? 'Superinvestor holdings only' : 'All stocks',
-    mode:(S.preset==='tuned'? 'Sector-tuned thresholds' : 'The same thresholds for every sector')+strictTxt,
+    mode:(S.preset==='tuned'? 'Sector-tuned: each rule set at the '+ordinal(DATA.tunedPct)+' percentile of the sector' : 'The same thresholds for every sector')+strictTxt,
     ruleBasis: perOn()? 'Each company judged on its own sector\'s rules'+strictTxt
              : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'+strictTxt
              : 'The '+ruleSector()+' rules, as set on screen'+strictTxt,
@@ -2948,27 +3256,28 @@ async function doExport(btn,kind){
 function downloadCsv(){
   const head=['Ticker','Company','Sector','Country','Market cap (USD)','P/E','Fwd P/E','ROE %','ROA %','ROIC %',
     'Op margin %','Net margin %','FCF margin %','Debt/equity','Interest cover','Current ratio','Altman Z','Piotroski',
-    '1 year %','5 year a year %','Price','Currency','Superinvestor held','ISIN'];
+    '1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN'];
   const q=v=>{ if(v===null||v===undefined||Number.isNaN(v)) return ''; const s=String(v);
     return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
   const body=cur.map(r=>[r[IX.sym],r[IX.name],SEC[r[IX.gics]]||'Unclassified',r[IX.ctry],r[IX.mcap],r[IX.pe],r[IX.fpe],
     r[IX.roe],r[IX.roa],r[IX.roic],r[IX.om],r[IX.nm],r[IX.fcfm],r[IX.de],r[IX.ic],r[IX.cr],r[IX.az],r[IX.pf],
-    r[IX.y1],cagr(r[IX.y5]),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
+    r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\ufeff'+head.join(',')+'\n'+body.join('\n')],{type:'text/csv'}));
   a.download=fileStem()+'.csv'; a.click();
   status('CSV saved, '+nf0.format(cur.length)+' companies.');
 }
 function copyRules(){
-  const where=S.preset==='tuned'? 'SECTOR_PRESETS' : 'SECTOR_OVERRIDES';
-  const block=(g, base)=>{
+  const tuned=S.preset==='tuned', where=tuned? 'TUNED_OVERRIDES' : 'SECTOR_OVERRIDES';
+  const block=(g, base, distSector)=>{
     const lines=DATA.filters.map(f=>{
-      const v = S.on[f.key]? adj(base[f.key], f.dir) : null;
+      const v = S.on[f.key]? adj(base[f.key], f.key, distSector) : null;
       return "        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+': '+(v===null?'None':v)+',';
     });
     return "    '"+g+"': {\n"+lines.join('\n')+"\n    },";
   };
-  const txt = perOn()? sectorsInPlay().map(g=>block(g, blockVals(g))).join('\n\n') : block(ruleSector(), S.val);
+  const txt = perOn()? sectorsInPlay().map(g=>block(g, blockVals(g), g)).join('\n\n')
+                     : block(ruleSector(), S.val, ruleSector());
   const done=()=>status('Rules copied. Paste them inside '+where+' in marquee_screener.py.');
   navigator.clipboard? navigator.clipboard.writeText(txt).then(done,()=>prompt('Copy these rules:',txt)) : prompt('Copy these rules:',txt);
 }
@@ -2977,20 +3286,22 @@ function copyRules(){
 function save(){
   try{ localStorage.setItem(STORE, JSON.stringify({sel:[...S.sel], us:S.us, non:S.non, mq:S.mq, preset:S.preset,
     per:S.per, strict:S.strict, loosen:S.loosen, on:S.on, val:S.val, perPage:S.perPage, sortKey:S.sortKey,
-    sortDir:S.sortDir, nsec:SEC.length})); }catch(e){}
+    sortDir:S.sortDir, momOn:S.momOn, stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
 }
 function restore(){
   try{
     const o=JSON.parse(localStorage.getItem(STORE)||'null');
     if(!o || o.nsec!==SEC.length) return false;
     Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
-      loosen:o.loosen||0, on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1});
+      loosen:o.loosen||0, on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
+      momOn:!!o.momOn, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
     return true;
   }catch(e){ return false; }
 }
 function defaults(){
   Object.assign(S,{sel:new Set(SEC.map((_,i)=>i).concat([OTHER])), us:true, non:true, mq:false, q:'',
-    preset:DATA.mode, per:DATA.perSector, strict:DATA.blankFails, loosen:0, page:1, perPage:50, sortKey:'mcap', sortDir:-1});
+    preset:DATA.mode, per:DATA.perSector, strict:DATA.blankFails, loosen:0, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
+    momOn:false, stages:new Set(['early']), sigs:new Set(SIGS.map(s=>s.k))});
   resetRules();
 }
 function syncControls(){
@@ -3006,7 +3317,7 @@ function init(){
   if(DATA.xlsxUrl){ const a=$('xlsx'); a.href=DATA.xlsxUrl; a.style.display=''; }
   if(DATA.deepUrl){ const l=$('idx-link'); l.href=DATA.deepUrl+'/?view=indexes'; l.hidden=false; }
   if(DATA.deepUrl) $('hint').textContent='Click a ticker to open its full analysis. Click a column heading to sort. Exports always contain every company that passes, not only this page.';
-  buildSectors(); buildCriteria();
+  buildSectors(); buildCriteria(); buildMomentum();
   if(!restore()) defaults();
   lastRuleKey=ruleKey();
   syncControls(); run();
@@ -3027,6 +3338,9 @@ function init(){
   $('c-none').onclick=()=>{ DATA.filters.forEach(f=>S.on[f.key]=false); changed(); };
   $('reset').onclick=()=>{ try{ localStorage.removeItem(STORE); }catch(e){} defaults(); lastRuleKey=ruleKey(); syncControls(); S.page=1; run(); status('Settings reset.'); };
   $('copy').onclick=copyRules;
+  $('mom-on').onchange=e=>{ S.momOn=e.target.checked; changed(); };
+  $('c-matrix').onclick=openMatrix;
+  $('mx-close').onclick=()=>$('mx').close();
   $('per-page').onchange=e=>{ S.perPage=parseInt(e.target.value,10); S.page=1; renderTable(); save(); };
   $('xl').onclick=e=>doExport(e.currentTarget,'xl');
   $('pp').onclick=e=>doExport(e.currentTarget,'pp');
@@ -3127,6 +3441,7 @@ const XP = (() => {
                              ['y5', '5 year %', 9, '0.0"%";-0.0"%"'],
                              ['cagr', '5 year a year %', 10, '0.0"%";-0.0"%"'],
                              ['px', 'Price', 11, '#,##0.00'], ['ccy', 'Ccy', 7, '@']]],
+      ['Timing', [['mom', 'Momentum stage', 13, '@'], ['momScore', 'Momentum score', 10, '0']]],
     ];
     const flat = cols.flatMap(([g, cs]) => cs.map(c => ({ group: g, key: c[0], label: c[1], w: c[2], f: c[3] })));
 
@@ -3487,7 +3802,7 @@ const XP = (() => {
     const pages = groups.length === 1 ? 3 : 1;
     const tc = [{ h: 'Ticker', a: 'left' }, { h: 'Company', a: 'left' }, { h: 'Country', a: 'left' },
       { h: 'Mkt cap $bn' }, { h: 'P/E' }, { h: 'ROE' }, { h: 'Op margin' }, { h: 'Net margin' },
-      { h: 'Debt / equity' }, { h: 'Piotroski' }, { h: 'Marquee', a: 'center' }];
+      { h: 'Momentum', a: 'left' }, { h: 'Piotroski' }, { h: 'Marquee', a: 'center' }];
     for (const g of groups) {
       for (let p = 0; p < pages; p++) {
         const chunk = g.rows.slice(p * per, (p + 1) * per);
@@ -3508,7 +3823,7 @@ const XP = (() => {
           T(r.name || '', { align: 'left' }), T(r.ctry || '', { align: 'left' }),
           T(fmt.bn(r.mcap), { align: 'right' }), T(fmt.x(r.pe), { align: 'right' }),
           T(fmt.pct(r.roe), { align: 'right' }), T(fmt.pct(r.om), { align: 'right' }),
-          T(fmt.pct(r.nm), { align: 'right' }), T(fmt.z(r.de), { align: 'right' }),
+          T(fmt.pct(r.nm), { align: 'right' }), T(r.mom || '-', { align: 'left' }),
           T(num(r.pf) === null ? '-' : String(Math.round(r.pf)) + '/9', { align: 'right' }),
           T(r.mq ? 'Held' : '', { align: 'center', bold: true, color: GOLD })], i)));
         s.addTable(rows, tableOpts([0.95, 2.8, 1.45, 1.0, 0.7, 0.75, 0.95, 0.95, 1.0, 0.8, 0.78],
@@ -3722,6 +4037,7 @@ def main():
     a2['Marquee Wt %'] = a2['Symbol'].map(wt)
     a2['Investors Holding'] = a2['Symbol'].map(cnt)
 
+    compute_tuned(a2)
     pool = a2[a2['Marquee Flag'] == 'Marquee holding'] if SCREEN_UNIVERSE == 'marquee' else a2
     label = 'marquee holdings only' if SCREEN_UNIVERSE == 'marquee' else 'full universe'
     unmapped = int(pool['GICS Sector'].isna().sum())
