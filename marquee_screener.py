@@ -2161,7 +2161,8 @@ HTML_COLS = [('Symbol', 'sym'), ('Description', 'name'), ('GICS Sector', 'gics')
              ('Piotroski F-score, Trailing 12 months', 'pf'),
              ('Performance %, Year to date', 'ytd'),
              ('Performance %, 1 year', 'y1'), ('Performance %, 5 years', 'y5'),
-             ('Price', 'px'), ('Price - Currency', 'ccy')]
+             ('Price', 'px'), ('Price - Currency', 'ccy'),
+             ('Industry', 'ind'), ('Investors Holding', 'inv')]
 
 # HTML filter key -> (data field, direction, label)
 HTML_FILTERS = [(k, HTML_KEY, FILTER_SPECS[k][1], FILTER_SPECS[k][2]) for k, HTML_KEY in [
@@ -2175,6 +2176,9 @@ HTML_FILTERS = [(k, HTML_KEY, FILTER_SPECS[k][1], FILTER_SPECS[k][2]) for k, HTM
 def build_html(a2, out_path, stamp, split=False):
     """Write the screener. split=True writes a light index.html plus a separate data.json,
     which is what a website wants: the page paints immediately and the data streams in."""
+    # industry names repeat thousands of times, so each row carries an index into one list
+    industries = sorted({str(x).strip() for x in a2['Industry'].dropna() if str(x).strip()})
+    ind_pos = {name: i for i, name in enumerate(industries)}
     rows = []
     for _, r in a2.iterrows():
         rec = []
@@ -2182,6 +2186,8 @@ def build_html(a2, out_path, stamp, split=False):
             v = r.get(src, None)
             if src == 'GICS Sector':
                 v = None if pd.isna(v) else list(SECTOR_MAP).index(v)
+            elif src == 'Industry':
+                v = None if pd.isna(v) else ind_pos.get(str(v).strip())
             elif src == 'Marquee Flag':
                 v = 1 if v == 'Marquee holding' else 0
             elif isinstance(v, float):
@@ -2198,6 +2204,7 @@ def build_html(a2, out_path, stamp, split=False):
         'fields': [k for _, k in HTML_COLS],
         'rows': rows,
         'sectors': list(SECTOR_MAP.keys()),
+        'industries': industries,
         'dropdown': [ALL_LABEL] + list(SECTOR_MAP.keys()),
         'allLabel': ALL_LABEL,
         'defaults': DEFAULT_FILTERS,
@@ -2259,10 +2266,12 @@ HTML_TEMPLATE = r"""<!doctype html>
  .frow .op{color:var(--gold);font-weight:700;font-size:12px;width:24px;text-align:center}
  .frow input[type=number]{width:78px;padding:4px 6px}
  .frow input[type=checkbox]{accent-color:var(--navy)}
- .btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+ .btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
  button{padding:7px 11px;border:1px solid var(--navy);background:var(--navy);color:#fff;border-radius:5px;font:12px inherit;cursor:pointer}
  button.ghost{background:#fff;color:var(--navy)}
  button.gold{background:var(--gold);border-color:var(--gold)}
+ button:disabled{opacity:.55;cursor:progress}
+ button:focus-visible,.msbtn:focus-visible,.msitem input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
  .count{font-size:12px;color:#555;margin:8px 0 10px}
  .count b{color:var(--navy);font-size:18px}
  .pill{display:inline-block;background:#eef2f8;border:1px solid var(--line);border-radius:10px;padding:1px 7px;font-size:11px;margin-right:4px}
@@ -2279,16 +2288,51 @@ HTML_TEMPLATE = r"""<!doctype html>
  .warn{background:#fff4f4;border:1px solid #f0c8c8;color:#9c2b2b;padding:9px 11px;border-radius:6px;font-size:12px;margin-bottom:10px}
  .note{font-size:11px;color:#777;margin-top:8px;line-height:1.5}
  .grp{margin-top:14px;padding-top:8px;border-top:2px solid var(--navy)}
+
+ /* sector picker: a closed field that opens into a ticked list */
+ .ms{position:relative}
+ .msbtn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;
+   color:#1a1a1a;border:1px solid var(--line);border-radius:5px;padding:6px 8px;font:13px inherit;text-align:left}
+ .msbtn:hover{border-color:var(--navy)}
+ .msbtn .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .msbtn .caret{color:var(--navy);font-size:11px;flex:0 0 auto}
+ .mspanel{position:absolute;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--navy);
+   border-radius:6px;box-shadow:0 8px 24px rgba(31,56,100,.18);z-index:20;padding:6px 0}
+ .mspanel[hidden]{display:none}
+ .msacts{display:flex;justify-content:space-between;padding:4px 12px 8px;border-bottom:1px solid #eef0f4;margin-bottom:4px}
+ .msacts button{background:none;border:0;color:var(--navy);padding:2px 0;font-weight:600;text-decoration:underline;
+   text-underline-offset:2px}
+ .msitem{display:flex;align-items:center;gap:8px;margin:0;padding:5px 12px;font-size:13px;color:#1a1a1a;cursor:pointer}
+ .msitem:hover{background:#f3f6fb}
+ .msitem input{accent-color:var(--navy);margin:0;width:15px;height:15px}
+ .msitem .nm{flex:1 1 auto}
+ .msitem .ct{font-size:11px;color:var(--navy);font-variant-numeric:tabular-nums}
+ .msitem.other{border-top:1px solid #eef0f4;margin-top:4px;padding-top:8px}
+ .ruleby{font-size:11px;color:var(--navy);background:#eef2f8;border-radius:5px;padding:6px 8px;margin-top:8px;line-height:1.45}
+
+ /* export bar */
+ .xbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+ .xbar .lead{font-size:12px;font-weight:600;color:var(--navy);margin-right:2px}
+ .xstat{font-size:12px;color:var(--navy)}
+ .xstat.err{color:#9c2b2b}
 </style></head><body>
 <header>
  <h1>GICS Sector Screener <span id="asof" style="font-weight:400;opacity:.85;font-size:13px"></span></h1>
- <p>Threshold set switches between the identical base rules and the sector-tuned ones. Change anything here. Once you settle on a threshold set, use Copy as Python and paste it into SECTOR_OVERRIDES in marquee_screener.py.</p>
+ <p>Pick the sectors you want, set the thresholds, then export the result as a formatted Excel workbook or a client-ready PowerPoint. Once you settle on a threshold set, use Copy as Python and paste it into marquee_screener.py.</p>
 </header>
 <div class="wrap">
  <div class="panel">
   <h2>Sector &amp; region</h2>
-  <label>GICS sector</label>
-  <select id="sector"></select>
+  <label id="mslab">Sectors</label>
+  <div class="ms" id="ms">
+   <button type="button" class="msbtn" id="msbtn" aria-haspopup="true" aria-expanded="false" aria-labelledby="mslab msbtnlab">
+    <span class="lab" id="msbtnlab">All sectors</span><span class="caret">&#9662;</span></button>
+   <div class="mspanel" id="mspanel" role="group" aria-label="Sectors" hidden>
+    <div class="msacts"><button type="button" id="msall">Select all</button><button type="button" id="msnone">Clear</button></div>
+    <div id="mslist"></div>
+   </div>
+  </div>
+  <div class="ruleby" id="ruleby"></div>
   <label>Region</label>
   <select id="region"><option value="all">US + non-US</option><option value="us">US only</option><option value="non">Non-US only</option></select>
   <label>Universe</label>
@@ -2298,7 +2342,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     <option value="base">Base - every sector identical</option>
     <option value="tuned">Sector-tuned - relaxed where needed</option>
   </select>
-  <label style="margin-top:8px"><input type="checkbox" id="persector"> Judge each row on its own sector's rules</label>
+  <label style="margin-top:8px" id="perlab"><input type="checkbox" id="persector"> Judge each company on its own sector's rules</label>
   <label>Missing values</label>
   <select id="blank"><option value="0">Ignore blanks (loose)</option><option value="1">Blank = reject (strict)</option></select>
   <label>Search name or ticker</label>
@@ -2312,24 +2356,30 @@ HTML_TEMPLATE = r"""<!doctype html>
     <button class="ghost" id="allof">All off</button>
     <button class="gold" id="copy">Copy as Python</button>
    </div>
-   <div class="note">An unchecked box means that filter is not applied. Copy as Python puts a ready-made SECTOR_OVERRIDES block on the clipboard, ready to paste straight into the script.</div>
+   <div class="note">An unchecked box means that filter is not applied. Copy as Python puts a ready-made threshold block on the clipboard, ready to paste straight into the script.</div>
   </div>
  </div>
 
  <div class="main">
   <div id="msg"></div>
   <div class="count"><b id="n">0</b> names clear these filters <span id="split"></span></div>
-  <div class="btns" style="margin-top:0">
-   <button id="csv">Download CSV</button>
-   <a id="xlsx" href="#" style="display:none"><button class="ghost">Download full workbook</button></a>
-   <span class="pill" id="showing"></span>
+  <div class="xbar">
+   <span class="lead">Export</span>
+   <button id="xl">Excel workbook</button>
+   <button id="pp">PowerPoint</button>
+   <button class="ghost" id="csv">CSV</button>
+   <a id="xlsx" href="#" style="display:none"><button class="ghost">Full screener workbook</button></a>
+   <span class="xstat" id="xstat" role="status" aria-live="polite"></span>
   </div>
-  <div class="tw"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
-  <div class="note" id="hint">Click a column heading to sort. The table shows the first 400 rows; the CSV download contains the full list.</div>
+  <div class="btns" style="margin-top:8px"><span class="pill" id="showing"></span></div>
+  <div class="tw" style="margin-top:6px"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
+  <div class="note" id="hint">Click a column heading to sort. The table shows the first 400 rows; every export contains the full list.</div>
  </div>
 </div>
 <script>
 let DATA, F, ROWS, SEC; const IX = {};
+const OTHER = -1;                 // rows whose TradingView sector maps to no GICS sector
+let SEL = new Set();              // selected sector indices, plus OTHER
 function boot(d){
   DATA=d; F=DATA.fields; F.forEach((f,i)=>IX[f]=i); ROWS=DATA.rows; SEC=DATA.sectors; init();
 }
@@ -2337,39 +2387,95 @@ const COLS = [['sym','Ticker'],['name','Company'],['gicsName','GICS'],['ctry','C
  ['mcap','Mkt cap'],['pe','P/E'],['fpe','Fwd P/E'],['roic','ROIC'],['roce','ROCE'],['roa','ROA'],['roe','ROE'],
  ['gm','Gross %'],['om','Op %'],['nm','Net %'],['fcfm','FCF %'],['cr','Cur ratio'],['de','D/E'],
  ['ic','Int cov'],['az','Altman Z'],['pf','Piotroski'],['ytd','YTD %'],['y1','1Y %'],['y5','5Y cum %'],['cagr','5Y ann %'],['px','Price'],['ccy','Ccy']];
-let sortKey='mcap', sortDir=-1, cur={};
+let sortKey='mcap', sortDir=-1, cur=[];
 
-function sectorDefaults(g){
-  const set = document.getElementById('preset').value==='tuned'? DATA.tuned : DATA.base;
-  return Object.assign({}, DATA.defaults, set[g]||{});
+// ---------------------------------------------------------------- sector selection
+const realSel = () => [...SEL].filter(i=>i!==OTHER).sort((a,b)=>a-b);
+const allSelected = () => realSel().length===SEC.length && SEL.has(OTHER);
+// The rule set the threshold boxes show. One sector ticked: that sector's own block.
+// Anything wider: the All Sectors block, with the per-sector option available.
+function ruleSector(){
+  const r=realSel();
+  return (r.length===1 && !SEL.has(OTHER)) ? SEC[r[0]] : DATA.allLabel;
 }
-function buildSectorSelect(){
-  const s=document.getElementById('sector');
-  DATA.dropdown.forEach(g=>{const o=document.createElement('option');o.value=g;o.textContent=g;s.appendChild(o)});
-  s.value=DATA.dropdown[0];
+const isMulti = () => ruleSector()===DATA.allLabel;
+function listNames(names){
+  if(names.length<=1) return names.join('');
+  return names.slice(0,-1).join(', ')+' and '+names[names.length-1];
 }
+function selectionLabel(short){
+  const r=realSel();
+  if(!r.length && !SEL.has(OTHER)) return 'No sector selected';
+  if(allSelected()) return 'All sectors';
+  if(r.length===SEC.length) return 'All eleven GICS sectors';
+  const names=r.map(i=>SEC[i]).concat(SEL.has(OTHER)?['Unclassified']:[]);
+  if(short && names.length>2) return names.length+' sectors: '+names.join(', ');
+  return listNames(names);
+}
+function buildSectorPicker(){
+  const counts=new Array(SEC.length).fill(0); let other=0;
+  for(const r of ROWS){ const g=r[IX.gics]; if(g===null||g===undefined) other++; else counts[g]++; }
+  const list=document.getElementById('mslist'); list.innerHTML='';
+  const item=(val,name,n,cls)=>{
+    const l=document.createElement('label'); l.className='msitem'+(cls?' '+cls:'');
+    l.innerHTML='<input type="checkbox" value="'+val+'"'+(SEL.has(val)?' checked':'')+'>'+
+      '<span class="nm">'+name+'</span><span class="ct">'+n.toLocaleString()+'</span>';
+    list.appendChild(l);
+  };
+  SEC.forEach((s,i)=>item(i,s,counts[i]));
+  if(other) item(OTHER,'Unclassified (Miscellaneous, Government)',other,'other');
+  list.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
+    const v=parseInt(cb.value,10); cb.checked? SEL.add(v) : SEL.delete(v); sectorsChanged();
+  }));
+}
+function syncPicker(){
+  document.querySelectorAll('#mslist input').forEach(cb=>cb.checked=SEL.has(parseInt(cb.value,10)));
+  document.getElementById('msbtnlab').textContent=selectionLabel(true);
+  document.getElementById('msbtn').title=selectionLabel(false);
+}
+let lastRuleSector=null;
+function sectorsChanged(){
+  syncPicker();
+  const rs=ruleSector();
+  if(rs!==lastRuleSector){ lastRuleSector=rs; buildFilters(); }
+  updateRuleNote();
+  run();
+}
+function updateRuleNote(){
+  const multi=isMulti(), per=document.getElementById('persector');
+  per.disabled=!multi;
+  document.getElementById('perlab').style.opacity=multi?1:.5;
+  const n=document.getElementById('ruleby');
+  if(!SEL.size){ n.textContent='Tick at least one sector.'; return; }
+  n.textContent = !multi ? 'Thresholds below are the '+ruleSector()+' rules. Edit them freely.'
+    : per.checked ? 'Each company is judged on its own sector\'s rules. Untick the box below to apply the threshold boxes to every company instead.'
+    : 'One rule set, the threshold boxes below, applies to every ticked sector.';
+}
+function openPicker(open){
+  const p=document.getElementById('mspanel'), b=document.getElementById('msbtn');
+  p.hidden=!open; b.setAttribute('aria-expanded', open?'true':'false');
+}
+
+// ---------------------------------------------------------------- thresholds
+function currentSet(){ return document.getElementById('preset').value==='tuned'? DATA.tuned : DATA.base; }
+function sectorDefaults(g){ return Object.assign({}, DATA.defaults, currentSet()[g]||{}); }
 function buildFilters(){
   const box=document.getElementById('filters'); box.innerHTML='';
-  const d=sectorDefaults(document.getElementById('sector').value);
+  const d=sectorDefaults(ruleSector());
   DATA.filters.forEach(f=>{
     const v=d[f.key], on=(v!==null&&v!==undefined);
     const row=document.createElement('div'); row.className='frow';
-    row.innerHTML='<input type="checkbox" '+(on?'checked':'')+' data-k="'+f.key+'">'+
+    row.innerHTML='<input type="checkbox" '+(on?'checked':'')+' data-k="'+f.key+'" aria-label="Use '+f.label+'">'+
       '<span class="nm">'+f.label+'</span><span class="op">'+(f.dir==='min'?'&ge;':'&le;')+'</span>'+
-      '<input type="number" step="any" data-v="'+f.key+'" value="'+(on?v:'')+'">';
+      '<input type="number" step="any" data-v="'+f.key+'" value="'+(on?v:'')+'" aria-label="'+f.label+' threshold">';
     box.appendChild(row);
   });
   box.querySelectorAll('input').forEach(el=>el.addEventListener('input',run));
 }
-function currentSet(){
-  return document.getElementById('preset').value==='tuned'? DATA.tuned : DATA.base;
-}
 function blockFilters(g){
-  // the threshold list for one sector, taken from the selected set rather than the UI boxes
-  const d=Object.assign({}, DATA.defaults, currentSet()[g]||{});
-  const out=[];
+  const d=sectorDefaults(g), out=[];
   DATA.filters.forEach(f=>{ const v=d[f.key];
-    if(v!==null&&v!==undefined) out.push({field:f.field,dir:f.dir,val:v}); });
+    if(v!==null&&v!==undefined) out.push({field:f.field,dir:f.dir,val:v,label:f.label,key:f.key}); });
   return out;
 }
 function activeFilters(){
@@ -2382,28 +2488,31 @@ function activeFilters(){
   });
   return out;
 }
+const perSectorOn = () => document.getElementById('persector').checked && isMulti();
 function cagr(y5){ if(y5===null||y5===undefined) return null; if(y5<=-100) return null;
   return (Math.pow(1+y5/100,0.2)-1)*100; }
 
+// ---------------------------------------------------------------- the screen
 function run(){
-  const g=document.getElementById('sector').value, reg=document.getElementById('region').value;
+  const reg=document.getElementById('region').value;
   const mq=document.getElementById('mqonly').value==='1';
   const strict=document.getElementById('blank').value==='1';
   const q=document.getElementById('q').value.trim().toLowerCase();
-  const perSector = document.getElementById('persector').checked && g===DATA.allLabel;
+  const perSector=perSectorOn();
   const fs=activeFilters();
   const cache={};
   const rulesFor=sec=>(cache[sec]=cache[sec]||blockFilters(sec in currentSet()? sec : DATA.allLabel));
-  let out=[];
+  const out=[];
   for(const r of ROWS){
-    if(g!==DATA.allLabel && SEC[r[IX.gics]]!==g) continue;
+    const g=r[IX.gics], key=(g===null||g===undefined)? OTHER : g;
+    if(!SEL.has(key)) continue;
     const isUS = r[IX.ctry]==='United States';
     if(reg==='us'&&!isUS) continue;
     if(reg==='non'&&isUS) continue;
     if(mq && !r[IX.mq]) continue;
     if(q && !((r[IX.sym]||'').toLowerCase().includes(q)||(r[IX.name]||'').toLowerCase().includes(q))) continue;
     let ok=true, reported=0;
-    const rules = perSector? rulesFor(SEC[r[IX.gics]]||DATA.allLabel) : fs;
+    const rules = perSector? rulesFor(key===OTHER? DATA.allLabel : SEC[key]) : fs;
     for(const f of rules){
       const v=r[IX[f.field]];
       if(v===null||v===undefined){ if(strict){ok=false;break;} else continue; }
@@ -2417,15 +2526,14 @@ function run(){
   }
   cur=out;
   const nus=out.filter(r=>r[IX.ctry]==='United States').length;
-  document.getElementById('n').textContent=out.length;
+  document.getElementById('n').textContent=out.length.toLocaleString();
   document.getElementById('split').innerHTML=out.length?
     '<span class="pill">US '+nus+'</span><span class="pill">Non-US '+(out.length-nus)+'</span>':'';
-  const ps=document.getElementById('persector').checked;
-  document.getElementById('msg').innerHTML =
-    (ps && g===DATA.allLabel ? '<div class="note" style="background:#eef2f8;border:1px solid #d8dee9;padding:8px 10px;border-radius:6px;margin-bottom:8px">Each row is being judged on its own sector\'s block from the selected set, so the threshold boxes below are ignored. This matches the Screen - All Sectors sheet in the workbook.</div>' : '')
-    + (ps && g!==DATA.allLabel ? '<div class="note" style="background:#fff7e0;border:1px solid #f0dca8;padding:8px 10px;border-radius:6px;margin-bottom:8px">Per-sector rules only apply when the sector is set to All Sectors.</div>' : '')
-    + (out.length? '' :
-    '<div class="warn">Nothing cleared these filters. Loosen a threshold - try Loosen 25%, or uncheck ROA and Altman. Banks and utilities never clear an ROA of 10% or debt to equity below 2.</div>');
+  document.getElementById('msg').innerHTML = !SEL.size
+    ? '<div class="warn">No sector is ticked. Open the Sectors list and tick at least one.</div>'
+    : out.length ? '' :
+    '<div class="warn">Nothing cleared these filters. Loosen a threshold - try Loosen 25%, or uncheck ROA and Altman. Banks and utilities never clear an ROA of 10% or debt to equity below 2.</div>';
+  ['xl','pp','csv'].forEach(id=>document.getElementById(id).disabled=!out.length);
   render();
 }
 function val(r,k){ if(k==='cagr') return cagr(r[IX.y5]);
@@ -2449,9 +2557,6 @@ function render(){
     tr.innerHTML=COLS.map(([k])=>{
       let v=val(r,k);
       if(k==='sym' && DATA.deepUrl){
-        // The ISIN goes first because Yahoo's own search resolves it to the right symbol,
-        // which beats guessing a venue suffix. The currency comes along so the app can
-        // prefer the local listing over a US ADR. The ticker rides as a fallback.
         let q='?ticker='+encodeURIComponent(v);
         const isin=r[IX.isin], ccy=r[IX.ccy];
         if(isin) q+='&isin='+encodeURIComponent(isin);
@@ -2470,6 +2575,89 @@ function render(){
     tb.appendChild(tr);
   }
 }
+
+// ---------------------------------------------------------------- exports
+const LIBS = {
+  ExcelJS:   ['https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js',
+              'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'],
+  PptxGenJS: ['https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js',
+              'https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js'],
+};
+function loadLib(name){
+  if(window[name]) return Promise.resolve(window[name]);
+  const urls=LIBS[name];
+  return urls.reduce((p,url)=>p.catch(()=>new Promise((res,rej)=>{
+    const s=document.createElement('script'); s.src=url; s.async=true;
+    s.onload=()=> window[name]? res(window[name]) : rej(new Error('loaded but empty'));
+    s.onerror=()=>{ s.remove(); rej(new Error('blocked')); };
+    document.head.appendChild(s);
+  })), Promise.reject()).catch(()=>{ throw new Error('Could not load the '+name+
+    ' library. Exports need an internet connection the first time; check the connection or a firewall blocking cdn.jsdelivr.net.'); });
+}
+function exportData(){
+  const ruleTxt=f=>(f.dir==='min'?'\u2265 ':'\u2264 ')+f.val;
+  const per=perSectorOn();
+  let rules;
+  if(per){
+    rules=realSel().map(i=>({sector:SEC[i], rules:Object.fromEntries(blockFilters(SEC[i]).map(f=>[f.label,ruleTxt(f)]))}));
+    if(SEL.has(OTHER)) rules.push({sector:'Unclassified ('+DATA.allLabel+' rules)',
+      rules:Object.fromEntries(blockFilters(DATA.allLabel).map(f=>[f.label,ruleTxt(f)]))});
+  } else {
+    rules=[{sector: isMulti()? 'Every ticked sector' : ruleSector(),
+            rules:Object.fromEntries(activeFilters().map(f=>[f.label,ruleTxt(f)]))}];
+  }
+  const regTxt={all:'US and non-US', us:'US listed only', non:'Non-US listed only'}[document.getElementById('region').value];
+  const tuned=document.getElementById('preset').value==='tuned';
+  const strict=document.getElementById('blank').value==='1';
+  const rows=cur.map(r=>({
+    sym:r[IX.sym], name:r[IX.name], sector:SEC[r[IX.gics]]||'Unclassified',
+    ind:(DATA.industries||[])[r[IX.ind]]||'', ctry:r[IX.ctry], mq:r[IX.mq]?1:0,
+    inv:r[IX.inv], wt:r[IX.wt], mcap:r[IX.mcap], pe:r[IX.pe], fpe:r[IX.fpe], roe:r[IX.roe],
+    roa:r[IX.roa], roic:r[IX.roic], roce:r[IX.roce], gm:r[IX.gm], om:r[IX.om], nm:r[IX.nm],
+    fcfm:r[IX.fcfm], cr:r[IX.cr], de:r[IX.de], ic:r[IX.ic], az:r[IX.az], pf:r[IX.pf],
+    ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy]}));
+  return {rows, meta:{
+    asOf:DATA.stamp.data, marqueeAsOf:DATA.stamp.marquee, sectorOrder:SEC.concat(['Unclassified']),
+    sectorsLabel:selectionLabel(false), region:regTxt,
+    universe:document.getElementById('mqonly').value==='1'? 'Marquee holdings only' : 'All stocks',
+    mode: tuned? 'Sector-tuned thresholds' : 'Base thresholds, the same for every sector',
+    ruleBasis: per? 'Each company judged on its own sector\'s rules'
+             : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'
+             : 'The '+ruleSector()+' rules, as set on screen',
+    blankPolicy: strict? 'A blank value rejects the company'
+      : 'Blanks ignored, but at least '+Math.round(DATA.minCoverage*100)+'% of the screened figures must be reported',
+    search: document.getElementById('q').value.trim(),
+    rules, ruleLabels: DATA.filters.map(f=>f.label)}};
+}
+function fileStem(){
+  const r=realSel();
+  const tag = allSelected()||r.length>3 ? 'sectors' : r.map(i=>SEC[i].replace(/\s+/g,'-')).join('_');
+  return 'MICS_screen_'+tag+'_'+DATA.stamp.iso;
+}
+function status(text, err){ const s=document.getElementById('xstat'); s.textContent=text; s.className='xstat'+(err?' err':''); }
+async function doExport(btn, kind){
+  const label=btn.textContent; btn.disabled=true; btn.textContent='Building...';
+  status('');
+  try{
+    const D=exportData();
+    if(kind==='xl'){
+      const ExcelJS=await loadLib('ExcelJS');
+      const buf=await XP.workbook(ExcelJS, D);
+      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fileStem()+'.xlsx';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+      status('Excel workbook downloaded, '+D.rows.length.toLocaleString()+' names.');
+    } else {
+      const P=await loadLib('PptxGenJS');
+      const pres=XP.deck(P, D);
+      await pres.writeFile({fileName: fileStem()+'.pptx'});
+      status('PowerPoint downloaded.');
+    }
+  } catch(e){ status(e.message||String(e), true); }
+  finally{ btn.disabled=false; btn.textContent=label; }
+}
+document.getElementById('xl').onclick=e=>doExport(e.currentTarget,'xl');
+document.getElementById('pp').onclick=e=>doExport(e.currentTarget,'pp');
 document.getElementById('csv').onclick=()=>{
   const head=COLS.map(c=>c[1]).join(',');
   const body=cur.map(r=>COLS.map(([k])=>{
@@ -2479,16 +2667,20 @@ document.getElementById('csv').onclick=()=>{
   }).join(',')).join('\n');
   const b=new Blob([head+'\n'+body],{type:'text/csv'});
   const a=document.createElement('a');a.href=URL.createObjectURL(b);
-  a.download='screen_'+document.getElementById('sector').value.replace(/\s+/g,'_')+'_'+DATA.stamp.iso+'.csv';a.click();
+  a.download=fileStem()+'.csv';a.click();
 };
+
+// ---------------------------------------------------------------- controls
 document.getElementById('copy').onclick=()=>{
-  const g=document.getElementById('sector').value;
-  const lines=activeFilters().map(f=>"        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+': '+f.val+',');
-  const offs=DATA.filters.filter(f=>!activeFilters().some(a=>a.key===f.key))
+  const g=ruleSector();
+  const act=activeFilters();
+  const lines=act.map(f=>"        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+': '+f.val+',');
+  const offs=DATA.filters.filter(f=>!act.some(a=>a.key===f.key))
     .map(f=>"        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+": None,");
   const txt="    '"+g+"': {\n"+lines.concat(offs).join('\n')+"\n    },";
+  const where=document.getElementById('preset').value==='tuned'?'SECTOR_PRESETS':'SECTOR_OVERRIDES';
   navigator.clipboard.writeText(txt).then(
-    ()=>alert('Copied. Paste this inside '+(document.getElementById('preset').value==='tuned'?'SECTOR_PRESETS':'SECTOR_OVERRIDES')+' in marquee_screener.py:\n\n'+txt),
+    ()=>alert('Copied. Paste this inside '+where+' in marquee_screener.py:\n\n'+txt),
     ()=>alert('Clipboard blocked, copy this manually:\n\n'+txt));
 };
 document.getElementById('reset').onclick=()=>{buildFilters();run();};
@@ -2502,26 +2694,540 @@ document.getElementById('loosen').onclick=()=>{
     const v=parseFloat(nb.value);
     nb.value=+(spec.dir==='min'? v*0.75 : v*1.25).toFixed(2);
   }); run();};
-['sector','region','mqonly','blank','preset','persector'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{
-  if(id==='sector'||id==='preset') buildFilters(); run();}));
+['region','mqonly','blank','preset','persector'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{
+  if(id==='preset') buildFilters(); if(id==='persector') updateRuleNote(); run();}));
 document.getElementById('q').addEventListener('input',run);
+document.getElementById('msbtn').addEventListener('click',()=>openPicker(document.getElementById('mspanel').hidden));
+document.getElementById('msall').onclick=()=>{ SEL=new Set(SEC.map((_,i)=>i).concat([OTHER])); sectorsChanged(); };
+document.getElementById('msnone').onclick=()=>{ SEL=new Set(); sectorsChanged(); };
+document.addEventListener('click',e=>{ if(!document.getElementById('ms').contains(e.target)) openPicker(false); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') openPicker(false); });
+
 function init(){
   document.getElementById('asof').textContent =
     '  -  updated as of ' + DATA.stamp.data + '  (marquee list ' + DATA.stamp.marquee + ')';
   if(DATA.deepUrl){
     document.getElementById('hint').innerHTML =
       'Click a <b>ticker</b> to open the live deep analysis for that company. Click a column heading to sort. '
-      + 'The table shows the first 400 rows; the CSV download contains the full list.';
+      + 'The table shows the first 400 rows; every export contains the full list.';
   }
   if(DATA.xlsxUrl){ const a=document.getElementById('xlsx');
     a.href=DATA.xlsxUrl; a.style.display='inline-block'; }
-  buildSectorSelect();
+  SEL=new Set(SEC.map((_,i)=>i).concat([OTHER]));
+  buildSectorPicker();
   document.getElementById('preset').value = DATA.mode;
   document.getElementById('persector').checked = DATA.perSector;
   document.getElementById('blank').value = DATA.blankFails? '1':'0';
-  buildFilters();
+  lastRuleSector=ruleSector();
+  syncPicker(); buildFilters(); updateRuleNote();
   run();
 }
+
+/*EXPORT_START*/
+// ---------------------------------------------------------------------------------
+// Export builders. Pure functions: they take the library and a plain data object and
+// return the file, so the same code runs in the browser and in a test harness.
+//   D = { rows:[{sym,name,sector,ind,ctry,mq,inv,wt,mcap,pe,fpe,roe,roa,roic,roce,
+//                gm,om,nm,fcfm,cr,de,ic,az,pf,ytd,y1,y5,cagr,px,ccy}],
+//         meta:{asOf, marqueeAsOf, sectors:[names], sectorsLabel, region, universe,
+//               mode, ruleBasis, blankPolicy, search, rules:[{sector, rules:{label:txt}}],
+//               ruleLabels:[...]} }
+// ---------------------------------------------------------------------------------
+const XP = (() => {
+  const NAVY = '1F3864', NAVY2 = '2E4A7D', GOLD = 'BF8F00', BAND = 'F2F5FA',
+        LINE = 'D8DEE9', INK = '1A1A1A', WHITE = 'FFFFFF', PALE = 'E9EEF6';
+
+  const num = v => (v === null || v === undefined || Number.isNaN(v)) ? null : v;
+  function median(arr) {
+    const a = arr.filter(v => v !== null && v !== undefined && !Number.isNaN(v)).sort((x, y) => x - y);
+    if (!a.length) return null;
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+  const fmt = {
+    x: v => num(v) === null ? '-' : v.toFixed(1) + 'x',
+    pct: v => num(v) === null ? '-' : v.toFixed(1) + '%',
+    bn: v => num(v) === null ? '-' : (v / 1e9 >= 100 ? Math.round(v / 1e9).toLocaleString('en-US')
+                                                     : (v / 1e9).toFixed(1)),
+    int: v => num(v) === null ? '-' : Math.round(v).toLocaleString('en-US'),
+    z: v => num(v) === null ? '-' : v.toFixed(2),
+  };
+
+  function bySector(D) {
+    const order = D.meta.sectorOrder || [];
+    const groups = new Map();
+    for (const r of D.rows) {
+      const k = r.sector || 'Unclassified';
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(r);
+    }
+    const keys = [...groups.keys()].sort((a, b) => {
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    return keys.map(k => ({ sector: k,
+      rows: groups.get(k).slice().sort((a, b) => (b.mcap || 0) - (a.mcap || 0)) }));
+  }
+
+  function sectorStats(g) {
+    const rows = g.rows;
+    return {
+      sector: g.sector, n: rows.length,
+      us: rows.filter(r => r.ctry === 'United States').length,
+      mq: rows.filter(r => r.mq).length,
+      pe: median(rows.map(r => r.pe)), roe: median(rows.map(r => r.roe)),
+      om: median(rows.map(r => r.om)),
+      mcap: rows.reduce((s, r) => s + (r.mcap || 0), 0),
+    };
+  }
+
+  // ================================================================ EXCEL ==========
+  async function workbook(ExcelJS, D) {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'MICS International';
+    wb.title = 'Sector screen results';
+    wb.created = new Date();
+    const A = c => 'FF' + c;
+    const font = (o = {}) => Object.assign({ name: 'Arial', size: 10, color: { argb: A(INK) } }, o);
+    const fill = c => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: A(c) } });
+    const hair = { style: 'thin', color: { argb: A(LINE) } };
+    const box = { top: hair, left: hair, bottom: hair, right: hair };
+    const groups = bySector(D);
+    const m = D.meta;
+
+    // ---- Results sheet first in the build (Summary formulas point at it), shown second
+    const cols = [
+      ['Company', [['sym', 'Ticker', 10, '@'], ['name', 'Company', 36, '@'],
+                   ['sector', 'GICS sector', 24, '@'], ['ind', 'Industry', 30, '@'],
+                   ['ctry', 'Country', 18, '@']]],
+      ['Ownership', [['mqTxt', 'Marquee held', 10, '@'], ['inv', 'Investors holding', 11, '0'],
+                     ['wt', 'Marquee weight %', 11, '0.00"%"']]],
+      ['Size and value', [['mcapBn', 'Market cap ($bn)', 12, '#,##0.0'],
+                          ['pe', 'P/E', 9, '0.0"x"'], ['fpe', 'Forward P/E', 9, '0.0"x"']]],
+      ['Returns, trailing twelve months', [['roe', 'ROE %', 9, '0.0"%";-0.0"%"'],
+                          ['roa', 'ROA %', 9, '0.0"%";-0.0"%"'],
+                          ['roic', 'ROIC %', 9, '0.0"%";-0.0"%"'],
+                          ['roce', 'ROCE %', 9, '0.0"%";-0.0"%"']]],
+      ['Margins', [['gm', 'Gross %', 9, '0.0"%";-0.0"%"'], ['om', 'Operating %', 10, '0.0"%";-0.0"%"'],
+                   ['nm', 'Net %', 9, '0.0"%";-0.0"%"'], ['fcfm', 'FCF %', 9, '0.0"%";-0.0"%"']]],
+      ['Balance sheet', [['cr', 'Current ratio', 9, '0.00'], ['de', 'Debt / equity', 9, '0.00'],
+                         ['ic', 'Interest cover', 9, '0.0"x"']]],
+      ['Quality scores', [['az', 'Altman Z', 9, '0.00'], ['pf', 'Piotroski F', 9, '0']]],
+      ['Price performance', [['ytd', 'YTD %', 9, '0.0"%";-0.0"%"'], ['y1', '1 year %', 9, '0.0"%";-0.0"%"'],
+                             ['y5', '5 year %', 9, '0.0"%";-0.0"%"'],
+                             ['cagr', '5 year a year %', 10, '0.0"%";-0.0"%"'],
+                             ['px', 'Price', 11, '#,##0.00'], ['ccy', 'Ccy', 7, '@']]],
+    ];
+    const flat = cols.flatMap(([g, cs]) => cs.map(c => ({ group: g, key: c[0], label: c[1], w: c[2], f: c[3] })));
+
+    // Summary is created first so it is the first tab; it is filled in further down.
+    const sum = wb.addWorksheet('Summary', { views: [{ showGridLines: false }],
+                                             properties: { tabColor: { argb: A(GOLD) } } });
+    const res = wb.addWorksheet('Results', { views: [{ state: 'frozen', xSplit: 2, ySplit: 5, showGridLines: false }],
+                                             properties: { tabColor: { argb: A(NAVY) } } });
+    res.columns = flat.map(c => ({ width: c.w }));
+    res.getCell('A1').value = 'Screen results';
+    res.getCell('A1').font = font({ size: 16, bold: true, color: { argb: A(NAVY) } });
+    res.getCell('A2').value = `${D.rows.length.toLocaleString('en-US')} names, ${m.sectorsLabel}. ` +
+      `Data as at ${m.asOf}, marquee holdings as at ${m.marqueeAsOf}. Sorted by sector, then market cap.`;
+    res.getCell('A2').font = font({ size: 10, color: { argb: A(NAVY) } });
+
+    // group band row 4, column headers row 5
+    let c0 = 1;
+    for (const [g, cs] of cols) {
+      const c1 = c0 + cs.length - 1;
+      if (c1 > c0) res.mergeCells(4, c0, 4, c1);
+      const cell = res.getCell(4, c0);
+      cell.value = g;
+      for (let c = c0; c <= c1; c++) {
+        const x = res.getCell(4, c);
+        x.fill = fill(NAVY); x.border = { left: { style: 'thin', color: { argb: A(WHITE) } } };
+      }
+      cell.font = font({ bold: true, color: { argb: A(WHITE) } });
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      c0 = c1 + 1;
+    }
+    flat.forEach((c, i) => {
+      const cell = res.getCell(5, i + 1);
+      cell.value = c.label;
+      cell.fill = fill(NAVY2);
+      cell.font = font({ bold: true, size: 9, color: { argb: A(WHITE) } });
+      cell.alignment = { horizontal: c.f === '@' ? 'left' : 'right', vertical: 'middle', wrapText: true };
+      cell.border = { bottom: { style: 'medium', color: { argb: A(GOLD) } } };
+    });
+    res.getRow(4).height = 20;
+    res.getRow(5).height = 30;
+
+    let r = 6, first = 6, band = 0;
+    const sectorRanges = [];
+    for (const g of groups) {
+      const start = r;
+      g.rows.forEach((row, i) => {
+        const vals = Object.assign({}, row, { mqTxt: row.mq ? 'Yes' : '',
+          mcapBn: num(row.mcap) === null ? null : row.mcap / 1e9 });
+        const line = res.getRow(r);
+        flat.forEach((c, j) => {
+          const cell = line.getCell(j + 1);
+          const v = vals[c.key];
+          cell.value = (v === undefined || v === null || v === '' || Number.isNaN(v)) ? null : v;
+          cell.numFmt = c.f;
+          cell.font = font({ size: 9 });
+          cell.alignment = { horizontal: c.f === '@' ? 'left' : 'right', vertical: 'middle' };
+          if (band % 2) cell.fill = fill(BAND);
+          cell.border = { bottom: hair };
+          if (i === 0 && r !== first) cell.border = { top: { style: 'thin', color: { argb: A(NAVY) } }, bottom: hair };
+        });
+        line.getCell(1).font = font({ size: 9, bold: true, color: { argb: A(NAVY) } });
+        if (row.mq) line.getCell(6).font = font({ size: 9, bold: true, color: { argb: A(GOLD) } });
+        band++; r++;
+      });
+      sectorRanges.push({ sector: g.sector, start, end: r - 1 });
+    }
+    const last = Math.max(first, r - 1);
+    res.autoFilter = { from: { row: 5, column: 1 }, to: { row: last, column: flat.length } };
+
+    // ---- Summary sheet
+    sum.columns = [{ width: 3 }, { width: 28 }, { width: 12 }, { width: 10 }, { width: 10 },
+                   { width: 13 }, { width: 13 }, { width: 13 }, { width: 15 }, { width: 17 }];
+    sum.getCell('B2').value = 'Sector screen';
+    sum.getCell('B2').font = font({ size: 22, bold: true, color: { argb: A(NAVY) } });
+    sum.getCell('B3').value = `MICS International   |   Data as at ${m.asOf}   |   Marquee holdings as at ${m.marqueeAsOf}`;
+    sum.getCell('B3').font = font({ size: 10, color: { argb: A(NAVY) } });
+    for (let c = 2; c <= 10; c++) sum.getCell(4, c).border = { bottom: { style: 'medium', color: { argb: A(GOLD) } } };
+
+    const label = (row, text) => {
+      const cell = sum.getCell(row, 2);
+      cell.value = text;
+      cell.font = font({ size: 12, bold: true, color: { argb: A(NAVY) } });
+    };
+    label(6, 'How the screen was set');
+    const settings = [
+      ['Sectors', m.sectorsLabel], ['Region', m.region], ['Universe', m.universe],
+      ['Threshold set', m.mode], ['Rules applied', m.ruleBasis], ['Missing values', m.blankPolicy],
+    ];
+    if (m.search) settings.push(['Search filter', m.search]);
+    let sr = 7;
+    for (const [k, v] of settings) {
+      const a = sum.getCell(sr, 2), b = sum.getCell(sr, 3);
+      sum.mergeCells(sr, 3, sr, 10);
+      a.value = k; b.value = v;
+      a.font = font({ bold: true }); b.font = font();
+      a.fill = fill(PALE);
+      for (let c = 2; c <= 10; c++) sum.getCell(sr, c).border = { bottom: hair };
+      b.alignment = { wrapText: true, vertical: 'top' }; a.alignment = { vertical: 'top' };
+      if (String(v).length > 95) sum.getRow(sr).height = 28;
+      sr++;
+    }
+
+    sr += 1;
+    label(sr, 'What came through, by sector'); sr++;
+    const heads = ['Sector', 'Names', 'US', 'Non-US', 'Marquee held', 'Median P/E',
+                   'Median ROE %', 'Median op margin %', 'Market cap ($bn)'];
+    heads.forEach((h, i) => {
+      const cell = sum.getCell(sr, i + 2);
+      cell.value = h;
+      cell.fill = fill(NAVY);
+      cell.font = font({ bold: true, size: 9, color: { argb: A(WHITE) } });
+      cell.alignment = { horizontal: i ? 'right' : 'left', vertical: 'middle', wrapText: true };
+    });
+    sum.getRow(sr).height = 28;
+    const hdr = sr; sr++;
+    const rngs = { sec: `Results!$C$6:$C$${last}`, ctry: `Results!$E$6:$E$${last}`,
+                   mq: `Results!$F$6:$F$${last}`, mc: `Results!$I$6:$I$${last}` };
+    const tableStart = sr;
+    groups.forEach((g, i) => {
+      const s = sectorStats(g);
+      const vals = [
+        s.sector,
+        { formula: `COUNTIF(${rngs.sec},B${sr})`, result: s.n },
+        { formula: `COUNTIFS(${rngs.sec},B${sr},${rngs.ctry},"United States")`, result: s.us },
+        { formula: `C${sr}-D${sr}`, result: s.n - s.us },
+        { formula: `COUNTIFS(${rngs.sec},B${sr},${rngs.mq},"Yes")`, result: s.mq },
+        s.pe, s.roe, s.om,
+        { formula: `SUMIF(${rngs.sec},B${sr},${rngs.mc})`, result: s.mcap / 1e9 },
+      ];
+      const fmts = ['@', '#,##0', '#,##0', '#,##0', '#,##0', '0.0"x"', '0.0"%"', '0.0"%"', '#,##0.0'];
+      vals.forEach((v, j) => {
+        const cell = sum.getCell(sr, j + 2);
+        cell.value = v === null ? null : v;
+        cell.numFmt = fmts[j];
+        cell.font = font(j === 0 ? { bold: true, color: { argb: A(NAVY) } } : {});
+        cell.alignment = { horizontal: j ? 'right' : 'left' };
+        cell.border = { bottom: hair };
+        if (i % 2) cell.fill = fill(BAND);
+      });
+      sr++;
+    });
+    const tableEnd = sr - 1;
+    const all = sectorStats({ sector: 'All', rows: D.rows });
+    const tot = [
+      'Total',
+      { formula: `SUM(C${tableStart}:C${tableEnd})`, result: all.n },
+      { formula: `SUM(D${tableStart}:D${tableEnd})`, result: all.us },
+      { formula: `SUM(E${tableStart}:E${tableEnd})`, result: all.n - all.us },
+      { formula: `SUM(F${tableStart}:F${tableEnd})`, result: all.mq },
+      all.pe, all.roe, all.om,
+      { formula: `SUM(J${tableStart}:J${tableEnd})`, result: all.mcap / 1e9 },
+    ];
+    const tf = ['@', '#,##0', '#,##0', '#,##0', '#,##0', '0.0"x"', '0.0"%"', '0.0"%"', '#,##0.0'];
+    tot.forEach((v, j) => {
+      const cell = sum.getCell(sr, j + 2);
+      cell.value = v; cell.numFmt = tf[j];
+      cell.font = font({ bold: true, color: { argb: A(NAVY) } });
+      cell.alignment = { horizontal: j ? 'right' : 'left' };
+      cell.border = { top: { style: 'medium', color: { argb: A(GOLD) } }, bottom: { style: 'thin', color: { argb: A(NAVY) } } };
+    });
+    sr += 2;
+    const note = sum.getCell(sr, 2);
+    sum.mergeCells(sr, 2, sr + 1, 10);
+    note.value = 'Counts and market cap are live formulas on the Results sheet, so deleting rows there ' +
+      'updates this table. Medians were computed at export. Market cap is in US dollars; price is in the ' +
+      'listing currency shown beside it. Percentages are stored as reported, so 12.5 means 12.5%.';
+    note.font = font({ size: 9, color: { argb: A(NAVY) } });
+    note.alignment = { wrapText: true, vertical: 'top' };
+    sum.getRow(sr).height = 18; sum.getRow(sr + 1).height = 18;
+
+    // ---- Thresholds sheet
+    const th = wb.addWorksheet('Thresholds', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4 }],
+                                               properties: { tabColor: { argb: A(NAVY2) } } });
+    th.getCell('A1').value = 'Thresholds applied';
+    th.getCell('A1').font = font({ size: 16, bold: true, color: { argb: A(NAVY) } });
+    th.getCell('A2').value = m.ruleBasis;
+    th.getCell('A2').font = font({ size: 10, color: { argb: A(NAVY) } });
+    const tl = m.ruleLabels;
+    th.columns = [{ width: 26 }].concat(tl.map(() => ({ width: 13 })));
+    ['Rule set'].concat(tl).forEach((h, i) => {
+      const cell = th.getCell(4, i + 1);
+      cell.value = h; cell.fill = fill(NAVY);
+      cell.font = font({ bold: true, size: 9, color: { argb: A(WHITE) } });
+      cell.alignment = { horizontal: i ? 'center' : 'left', vertical: 'middle', wrapText: true };
+    });
+    th.getRow(4).height = 30;
+    m.rules.forEach((rs, i) => {
+      const row = 5 + i;
+      th.getCell(row, 1).value = rs.sector;
+      th.getCell(row, 1).font = font({ bold: true, color: { argb: A(NAVY) } });
+      tl.forEach((lab, j) => {
+        const cell = th.getCell(row, j + 2);
+        cell.value = rs.rules[lab] || 'off';
+        cell.font = font(rs.rules[lab] ? {} : { color: { argb: A(NAVY2) }, italic: true });
+        cell.alignment = { horizontal: 'center' };
+      });
+      for (let c = 1; c <= tl.length + 1; c++) {
+        const cell = th.getCell(row, c);
+        cell.border = { bottom: hair };
+        if (i % 2) cell.fill = fill(BAND);
+      }
+    });
+
+    // print setup: landscape, one page wide, header rows repeated on the results pages
+    for (const ws of [sum, res, th]) {
+      ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1,
+                       fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5,
+                                                  header: 0.2, footer: 0.2 } };
+      ws.headerFooter = { oddFooter: '&L&8MICS International, sector screen&R&8Page &P of &N' };
+    }
+    res.pageSetup.printTitlesRow = '4:5';
+    return wb.xlsx.writeBuffer();
+  }
+
+  // ================================================================ POWERPOINT =====
+  function deck(PptxGenJS, D) {
+    const pres = new PptxGenJS();
+    pres.layout = 'LAYOUT_WIDE';            // 13.33 x 7.5 in
+    pres.author = 'MICS International';
+    pres.company = 'MICS International';
+    pres.title = 'Sector screen';
+    const HEAD = 'Georgia', BODY = 'Calibri';
+    pres.theme = { headFontFace: HEAD, bodyFontFace: BODY };
+    const m = D.meta;
+    const W = 13.333, X0 = 0.6, CW = W - 1.2;
+    const foot = `MICS International   |   Sector screen   |   Data as at ${m.asOf}`;
+
+    pres.defineSlideMaster({
+      title: 'COVER',
+      background: { color: NAVY },
+      objects: [
+        { line: { x: X0, y: 4.05, w: 1.4, h: 0, line: { color: GOLD, width: 2 } } },
+        { placeholder: { options: { name: 'title', type: 'title', x: X0, y: 1.9, w: 11.5, h: 1.5,
+            fontFace: HEAD, fontSize: 44, color: WHITE, bold: false, valign: 'bottom', align: 'left', margin: 0 },
+            text: 'Title' } },
+        { placeholder: { options: { name: 'body', type: 'body', x: X0, y: 4.3, w: 11.5, h: 1.6,
+            fontFace: BODY, fontSize: 16, color: 'C9D3E3', valign: 'top', align: 'left', margin: 0 }, text: '' } },
+      ],
+    });
+    pres.defineSlideMaster({
+      title: 'CONTENT',
+      background: { color: WHITE },
+      margin: [0.5, 0.6, 0.75, 0.6],
+      objects: [
+        { placeholder: { options: { name: 'title', type: 'title', x: X0, y: 0.38, w: CW, h: 0.75,
+            fontFace: HEAD, fontSize: 24, color: NAVY, valign: 'bottom', align: 'left', margin: 0 }, text: 'Title' } },
+        { line: { x: X0, y: 1.22, w: CW, h: 0, line: { color: LINE, width: 0.75 } } },
+        { text: { text: foot, options: { x: X0, y: 7.0, w: 9, h: 0.3, fontFace: BODY, fontSize: 9,
+            color: NAVY, margin: 0 } } },
+      ],
+      slideNumber: { x: 12.1, y: 7.0, w: 0.63, h: 0.3, fontFace: BODY, fontSize: 9, color: NAVY, align: 'right' },
+    });
+
+    const T = (text, o = {}) => ({ text: String(text), options: o });
+    const head = (cols) => cols.map((c, i) => T(c.h, { bold: true, color: WHITE, fill: { color: NAVY },
+      align: c.a || (i ? 'right' : 'left'), valign: 'middle' }));
+    const tableOpts = (colW, extra = {}) => Object.assign({
+      x: X0, colW, fontFace: BODY, fontSize: 10.5, color: INK, valign: 'middle',
+      border: { type: 'solid', pt: 0.5, color: LINE }, margin: [0.03, 0.08, 0.03, 0.08],
+      rowH: 0.3, autoPage: false,
+    }, extra);
+    const zebra = (cells, i) => cells.map(c => { if (i % 2) c.options.fill = { color: BAND }; return c; });
+
+    // 1. cover
+    const groups = bySector(D);
+    const s1 = pres.addSlide({ masterName: 'COVER' });
+    s1.addText('Sector screen', { placeholder: 'title' });
+    s1.addText([
+      T(groups.length === 1
+        ? `${D.rows.length.toLocaleString('en-US')} companies cleared the ${groups[0].sector} screen`
+        : `${D.rows.length.toLocaleString('en-US')} companies cleared the screen across ${groups.length} sectors`,
+        { breakLine: true, color: WHITE }),
+      T(m.sectorsLabel, { breakLine: true, fontSize: 13 }),
+      T(`Data as at ${m.asOf}   |   Prepared by MICS International`, { fontSize: 12 }),
+    ], { placeholder: 'body' });
+
+    // 2. summary
+    const stats = groups.map(sectorStats);
+    const all = sectorStats({ sector: 'Total', rows: D.rows });
+    const s2 = pres.addSlide({ masterName: 'CONTENT' });
+    const lead = stats.slice().sort((a, b) => b.n - a.n)[0];
+    s2.addText(stats.length > 1
+      ? `${D.rows.length.toLocaleString('en-US')} names passed, ${lead.sector} contributed the most`
+      : `${D.rows.length.toLocaleString('en-US')} names passed the ${lead ? lead.sector : ''} screen`,
+      { placeholder: 'title' });
+    const sc = [{ h: 'Sector', a: 'left' }, { h: 'Names' }, { h: 'US' }, { h: 'Non-US' },
+                { h: 'Marquee held' }, { h: 'Median P/E' }, { h: 'Median ROE' },
+                { h: 'Median op margin' }, { h: 'Market cap $bn' }];
+    const rows2 = [head(sc)];
+    stats.forEach((s, i) => rows2.push(zebra([
+      T(s.sector, { bold: true, color: NAVY, align: 'left' }), T(fmt.int(s.n), { align: 'right' }),
+      T(fmt.int(s.us), { align: 'right' }), T(fmt.int(s.n - s.us), { align: 'right' }),
+      T(fmt.int(s.mq), { align: 'right' }), T(fmt.x(s.pe), { align: 'right' }),
+      T(fmt.pct(s.roe), { align: 'right' }), T(fmt.pct(s.om), { align: 'right' }),
+      T(fmt.bn(s.mcap), { align: 'right' })], i)));
+    const totStyle = { bold: true, color: NAVY, border: [{ type: 'solid', pt: 1.5, color: GOLD },
+      { type: 'none' }, { type: 'solid', pt: 0.5, color: LINE }, { type: 'none' }] };
+    if (stats.length > 1) rows2.push([
+      T('Total', Object.assign({ align: 'left' }, totStyle)),
+      T(fmt.int(all.n), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.int(all.us), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.int(all.n - all.us), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.int(all.mq), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.x(all.pe), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.pct(all.roe), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.pct(all.om), Object.assign({ align: 'right' }, totStyle)),
+      T(fmt.bn(all.mcap), Object.assign({ align: 'right' }, totStyle))]);
+    const fs2 = rows2.length > 11 ? 10 : 11;
+    s2.addTable(rows2, tableOpts([2.7, 0.95, 0.85, 0.95, 1.2, 1.15, 1.15, 1.45, 1.53],
+      { y: 1.5, fontSize: fs2, rowH: rows2.length > 11 ? 0.33 : 0.38 }));
+    const tableBottom = 1.5 + rows2.length * (rows2.length > 11 ? 0.33 : 0.38);
+    const held = D.rows.filter(r => r.mq).sort((a, b) => (b.inv || 0) - (a.inv || 0) || (b.mcap || 0) - (a.mcap || 0));
+    const room = Math.floor((6.75 - tableBottom - 0.75) / 0.3) - 1;
+    if (held.length && room >= 3) {
+      const yH = tableBottom + 0.35;
+      s2.addText('Most widely held by the superinvestors tracked on Dataroma',
+        { x: X0, y: yH, w: CW, h: 0.32, fontFace: HEAD, fontSize: 14, color: NAVY, margin: 0, isTextBox: true });
+      const hc = [{ h: 'Ticker', a: 'left' }, { h: 'Company', a: 'left' }, { h: 'Sector', a: 'left' },
+                  { h: 'Investors holding' }, { h: 'Mkt cap $bn' }, { h: 'P/E' }, { h: 'ROE' }];
+      const hr = [head(hc)];
+      held.slice(0, Math.min(5, room)).forEach((r, i) => hr.push(zebra([
+        T(r.sym, { bold: true, color: NAVY, align: 'left' }), T(r.name || '', { align: 'left' }),
+        T(r.sector || '', { align: 'left' }), T(fmt.int(r.inv), { align: 'right' }),
+        T(fmt.bn(r.mcap), { align: 'right' }), T(fmt.x(r.pe), { align: 'right' }),
+        T(fmt.pct(r.roe), { align: 'right' })], i)));
+      s2.addTable(hr, tableOpts([1.1, 3.9, 2.6, 1.45, 1.2, 0.9, 0.98], { y: yH + 0.42, fontSize: 10, rowH: 0.3 }));
+    }
+    s2.addNotes(`Settings: ${m.region}; ${m.universe}; ${m.mode}; ${m.ruleBasis}`);
+
+    // 3. how names were selected
+    const s3 = pres.addSlide({ masterName: 'CONTENT' });
+    s3.addText('How the names were selected', { placeholder: 'title' });
+    const setRows = [
+      ['Sectors', m.sectorsLabel], ['Region', m.region], ['Universe', m.universe],
+      ['Threshold set', m.mode], ['Rules applied', m.ruleBasis], ['Missing values', m.blankPolicy],
+    ];
+    if (m.search) setRows.push(['Search filter', m.search]);
+    s3.addTable(setRows.map((r, i) => zebra([T(r[0], { bold: true, color: NAVY }), T(r[1])], i)),
+      tableOpts([2.2, CW - 2.2], { y: 1.45, fontSize: 10.5, rowH: 0.32 }));
+    // thresholds grid, active metrics only
+    const used = m.ruleLabels.filter(l => m.rules.some(r => r.rules[l]));
+    if (used.length) {
+      const y3 = 1.45 + setRows.length * 0.34 + 0.35;
+      const nRules = m.rules.length;
+      const fsz = nRules > 8 ? 8.5 : 9.5;
+      const firstW = 2.2, other = (CW - firstW) / used.length;
+      const grid = [[T('Rule set', { bold: true, color: WHITE, fill: { color: NAVY } })]
+        .concat(used.map(l => T(l, { bold: true, color: WHITE, fill: { color: NAVY }, align: 'center' })))];
+      m.rules.forEach((r, i) => grid.push(zebra([T(r.sector, { bold: true, color: NAVY })]
+        .concat(used.map(l => T(r.rules[l] || 'off', { align: 'center', italic: !r.rules[l],
+          color: r.rules[l] ? INK : NAVY2 }))), i)));
+      s3.addTable(grid, tableOpts([firstW].concat(used.map(() => other)),
+        { y: y3, fontSize: fsz, rowH: Math.min(0.3, (6.85 - y3) / (nRules + 1)) }));
+    }
+
+    // 4+. sector tables. One sector: up to three pages. Several: the largest 12 of each.
+    const per = 12;
+    const pages = groups.length === 1 ? 3 : 1;
+    const tc = [{ h: 'Ticker', a: 'left' }, { h: 'Company', a: 'left' }, { h: 'Country', a: 'left' },
+      { h: 'Mkt cap $bn' }, { h: 'P/E' }, { h: 'ROE' }, { h: 'Op margin' }, { h: 'Net margin' },
+      { h: 'Debt / equity' }, { h: 'Piotroski' }, { h: 'Marquee', a: 'center' }];
+    for (const g of groups) {
+      for (let p = 0; p < pages; p++) {
+        const chunk = g.rows.slice(p * per, (p + 1) * per);
+        if (!chunk.length) break;
+        const s = pres.addSlide({ masterName: 'CONTENT' });
+        const shown = Math.min(g.rows.length, (p + 1) * per);
+        const title = p === 0
+          ? `${g.sector}: ${g.rows.length.toLocaleString('en-US')} name${g.rows.length === 1 ? '' : 's'} cleared`
+          : `${g.sector}, continued`;
+        s.addText(title, { placeholder: 'title' });
+        const sub = g.rows.length <= per && p === 0 ? 'All names shown, largest first by market cap'
+          : `Names ${p * per + 1} to ${shown} of ${g.rows.length.toLocaleString('en-US')}, largest first by market cap`;
+        s.addText(sub, { x: X0, y: 1.3, w: CW, h: 0.3, fontFace: BODY, fontSize: 11, color: NAVY,
+          margin: 0, isTextBox: true });
+        const rows = [head(tc)];
+        chunk.forEach((r, i) => rows.push(zebra([
+          T(r.sym, { bold: true, color: NAVY, align: 'left' }),
+          T(r.name || '', { align: 'left' }), T(r.ctry || '', { align: 'left' }),
+          T(fmt.bn(r.mcap), { align: 'right' }), T(fmt.x(r.pe), { align: 'right' }),
+          T(fmt.pct(r.roe), { align: 'right' }), T(fmt.pct(r.om), { align: 'right' }),
+          T(fmt.pct(r.nm), { align: 'right' }), T(fmt.z(r.de), { align: 'right' }),
+          T(num(r.pf) === null ? '-' : String(Math.round(r.pf)) + '/9', { align: 'right' }),
+          T(r.mq ? 'Held' : '', { align: 'center', bold: true, color: GOLD })], i)));
+        s.addTable(rows, tableOpts([0.95, 2.8, 1.45, 1.0, 0.7, 0.75, 0.95, 0.95, 1.0, 0.8, 0.78],
+          { y: 1.7, fontSize: 10, rowH: 0.36 }));
+        const mqN = g.rows.filter(r => r.mq).length;
+        s.addText(`Market cap in US dollars. Returns and margins are trailing twelve months. ` +
+          `${mqN} of the ${g.rows.length.toLocaleString('en-US')} names are held by at least one investor tracked by Dataroma.`,
+          { x: X0, y: 6.55, w: CW, h: 0.3, fontFace: BODY, fontSize: 9.5, color: NAVY, margin: 0, isTextBox: true });
+      }
+    }
+
+    // last. notes
+    const sN = pres.addSlide({ masterName: 'CONTENT' });
+    sN.addText('Notes on the data', { placeholder: 'title' });
+    const notes = [
+      ['Source', `TradingView screener export as at ${m.asOf}. Superinvestor holdings from Dataroma as at ${m.marqueeAsOf}.`],
+      ['Sector mapping', 'TradingView sectors are folded into the eleven GICS sectors. REITs are moved from Finance to Real Estate by industry name.'],
+      ['Figures', 'P/E, returns and margins are trailing twelve months unless stated. Current ratio and debt to equity are from the latest quarter. Market cap is in US dollars.'],
+      ['Marquee held', 'Held by at least one superinvestor portfolio tracked by Dataroma. Ownership data lags the filing date.'],
+      ['Use', 'A screen narrows the field for research. It is not a recommendation to buy or sell any security, and every name needs its own work before any decision.'],
+    ];
+    sN.addTable(notes.map((r, i) => zebra([T(r[0], { bold: true, color: NAVY, valign: 'top' }),
+      T(r[1], { valign: 'top' })], i)), tableOpts([2.2, CW - 2.2], { y: 1.5, fontSize: 11.5, rowH: 0.6 }));
+    return pres;
+  }
+
+  return { workbook, deck, bySector, sectorStats };
+})();
+/*EXPORT_END*/
 /*__BOOT__*/
 </script></body></html>
 """
