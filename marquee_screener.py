@@ -1982,31 +1982,13 @@ def _clean_number(value):
 
 
 def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
-    """Write stocks.json and sector_stats.json for the deep analysis app."""
-    rows = all_rows[
-        all_rows['Symbol'].isin(screened_symbols)
-        | (all_rows['Marquee Flag'] == 'Marquee holding')
-    ].copy()
-    rows = rows[rows['ISIN'].notna()]
-    if len(rows) == 0:
-        print('      deep feed skipped - no screened rows carry an ISIN')
-        return
+    """Write stocks.json and sector_stats.json for the deep analysis app.
 
-    stocks = {}
-    for _, r in rows.iterrows():
-        entry = {}
-        for src, key in DEEP_FEED_FIELDS:
-            entry[key] = _clean_number(r.get(src))
-        entry['marquee'] = bool(r.get('Marquee Flag') == 'Marquee holding')
-        entry['marquee_weight_pct'] = _clean_number(r.get('Marquee Wt %'))
-        entry['marquee_investors'] = _clean_number(r.get('Investors Holding'))
-        entry['screened'] = bool(r['Symbol'] in screened_symbols)
-        # last writer wins on a duplicate ISIN, which only happens for dual listings
-        stocks[r['ISIN']] = entry
-
-    feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
-            'built': stamp['built'], 'source': 'TradingView screener export',
-            'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
+    sector_stats.json needs no ISIN, so it is written on every run. stocks.json is keyed by
+    ISIN, so it is only refreshed when the export carries an ISIN column. When it does not,
+    the previous stocks.json is left in place and the run log says how old it is.
+    """
+    folders = [d for d in (out_dir, publish_dir) if d]
 
     # peer distributions, computed on the FULL universe rather than the screened subset,
     # because a median taken from names that already passed a quality screen is not a
@@ -2018,7 +2000,7 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
             continue
         block = {'count': int(len(sub))}
         for src, key in DEEP_FEED_FIELDS:
-            if key not in PEER_METRICS:
+            if key not in PEER_METRICS or src in MISSING_COLS:
                 continue
             series = pd.to_numeric(sub[src], errors='coerce').dropna()
             if len(series) < 20:
@@ -2028,16 +2010,52 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
                           'median': round(float(series.median()), 4),
                           'p75': round(float(series.quantile(0.75)), 4)}
         stats[gics] = block
-
     stats_feed = {'as_of': stamp['data'], 'basis': 'full TradingView universe, not the '
                                                    'screened subset', 'sectors': stats}
-
-    for folder in [d for d in (out_dir, publish_dir) if d]:
+    for folder in folders:
         os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, 'stocks.json'), 'w') as fh:
-            json.dump(feed, fh, separators=(',', ':'))
         with open(os.path.join(folder, 'sector_stats.json'), 'w') as fh:
             json.dump(stats_feed, fh, indent=1)
+
+    rows = all_rows[
+        all_rows['Symbol'].isin(screened_symbols)
+        | (all_rows['Marquee Flag'] == 'Marquee holding')
+    ].copy()
+    rows = rows[rows['ISIN'].notna()]
+    if len(rows) == 0:
+        old_as_of = ''
+        for folder in folders:
+            try:
+                with open(os.path.join(folder, 'stocks.json')) as fh:
+                    old_as_of = json.load(fh).get('as_of', '')
+                break
+            except Exception:
+                continue
+        print(f'      sector_stats.json refreshed ({len(stats)} sectors)')
+        print('      [WARN] stocks.json NOT refreshed - this export has no ISIN column. The deep '
+              'analysis app keeps showing the previous TradingView numbers'
+              + (f' (as of {old_as_of})' if old_as_of else '') +
+              '. Add the ISIN column in TradingView and export again to fix this.')
+        return
+
+    stocks = {}
+    for _, r in rows.iterrows():
+        entry = {}
+        for src, key in DEEP_FEED_FIELDS:
+            entry[key] = None if src in MISSING_COLS else _clean_number(r.get(src))
+        entry['marquee'] = bool(r.get('Marquee Flag') == 'Marquee holding')
+        entry['marquee_weight_pct'] = _clean_number(r.get('Marquee Wt %'))
+        entry['marquee_investors'] = _clean_number(r.get('Investors Holding'))
+        entry['screened'] = bool(r['Symbol'] in screened_symbols)
+        # last writer wins on a duplicate ISIN, which only happens for dual listings
+        stocks[r['ISIN']] = entry
+
+    feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
+            'built': stamp['built'], 'source': 'TradingView screener export',
+            'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
+    for folder in folders:
+        with open(os.path.join(folder, 'stocks.json'), 'w') as fh:
+            json.dump(feed, fh, separators=(',', ':'))
     size = os.path.getsize(os.path.join(out_dir, 'stocks.json')) / 1024
     print(f'      deep feed -> stocks.json ({len(stocks)} names, {size:,.0f} KB) '
           f'and sector_stats.json ({len(stats)} sectors)')
