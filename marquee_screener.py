@@ -1159,7 +1159,71 @@ def resolve_columns(a):
     return a
 
 
-def load_universe(path):
+# ------------------------------------------------------------------ ISIN memory -------
+# TradingView exports do not always carry the ISIN column, and the deep analysis app is
+# keyed by ISIN. So every ISIN the script ever sees is remembered in DATA_DIR/isin_map.json,
+# keyed by ticker and country, and filled back in on runs whose export has no ISIN column.
+# The memory is also seeded from the last published stocks.json, so ISINs from older
+# exports are recovered automatically. In GitHub Actions the data folder is committed, so
+# the memory survives from run to run.
+ISIN_MEMORY_FILE = 'isin_map.json'
+_ISIN_SHAPE = re.compile(r'^[A-Z]{2}[A-Z0-9]{9}[0-9]$')
+
+
+def _isin_key(symbol, country):
+    """Ticker plus country. Numeric tickers are normalised (2330.0 -> 2330, 005930 -> 5930)
+    because older feeds stored them as numbers and lost the leading zeros."""
+    t = str(symbol).strip().upper()
+    if re.fullmatch(r'\d+(\.0+)?', t):
+        t = str(int(float(t)))
+    return f'{t}|{str(country).strip()}'
+
+
+def fill_isins(a, data_dir, feed_dirs=()):
+    path = os.path.join(data_dir, ISIN_MEMORY_FILE)
+    memory = {}
+    try:
+        with open(path) as fh:
+            memory = json.load(fh).get('map', {})
+    except Exception:
+        pass
+    seeded = 0
+    for folder in [d for d in feed_dirs if d]:
+        try:
+            with open(os.path.join(folder, 'stocks.json')) as fh:
+                old = json.load(fh).get('stocks', {})
+        except Exception:
+            continue
+        for key, e in old.items():
+            isin = str(e.get('isin') or key).upper()
+            if _ISIN_SHAPE.match(isin) and e.get('ticker') and e.get('country'):
+                k = _isin_key(e['ticker'], e['country'])
+                if k not in memory:
+                    memory[k] = isin
+                    seeded += 1
+    keys = [_isin_key(s, c) for s, c in zip(a['Symbol'], a['Country or region of registration'])]
+    learned = 0
+    for k, isin in zip(keys, a['ISIN']):
+        if isinstance(isin, str) and memory.get(k) != isin:
+            memory[k] = isin
+            learned += 1
+    missing = a['ISIN'].isna()
+    filled = pd.Series(keys, index=a.index)[missing].map(memory)
+    a.loc[missing, 'ISIN'] = filled
+    n_filled = int(filled.notna().sum())
+    try:
+        with open(path, 'w') as fh:
+            json.dump({'updated': datetime.date.today().isoformat(), 'count': len(memory),
+                       'map': memory}, fh, separators=(',', ':'), sort_keys=True)
+    except Exception as e:
+        print(f'      [WARN] could not save {ISIN_MEMORY_FILE}: {e}')
+    print(f'      ISIN memory: {len(memory)} known ({learned} learned from this export, '
+          f'{seeded} recovered from the last stocks.json), {n_filled} filled in, '
+          f'{int(a["ISIN"].isna().sum())} rows still without one')
+    return a
+
+
+def load_universe(path, feed_dirs=()):
     a = pd.read_csv(path)
     a.columns = [re.sub(r'\s+', ' ', str(c)).strip() for c in a.columns]
     a = resolve_columns(a)
@@ -1175,7 +1239,8 @@ def load_universe(path):
               f"carry a valid ISIN")
     else:
         a['ISIN'] = None
-        print('      no ISIN column in this export - deep links will pass the ticker only')
+        print('      no ISIN column in this export - filling from the ISIN memory')
+    a = fill_isins(a, os.path.dirname(os.path.abspath(path)), feed_dirs)
     return a
 
 
@@ -1943,6 +2008,10 @@ DEEP_FEED_FIELDS = [
     ('Relative strength index, 14, 1 day', 'rsi14'),
 ]
 
+# fields that are labels, never numbers
+DEEP_FEED_TEXT = {'ticker', 'name', 'isin', 'tv_sector', 'gics', 'industry', 'country',
+                  'mcap_ccy', 'ccy', 'fcf_ccy'}
+
 # the period each TradingView field actually covers, so the deep page can label it and
 # nobody compares a trailing-twelve-month return against an annual margin by accident
 DEEP_FEED_PERIODS = {
@@ -1984,9 +2053,9 @@ def _clean_number(value):
 def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
     """Write stocks.json and sector_stats.json for the deep analysis app.
 
-    sector_stats.json needs no ISIN, so it is written on every run. stocks.json is keyed by
-    ISIN, so it is only refreshed when the export carries an ISIN column. When it does not,
-    the previous stocks.json is left in place and the run log says how old it is.
+    Both are written on every run. stocks.json is keyed by ISIN where one is known, from
+    the export or from the ISIN memory, and by a TV:TICKER:CCY key otherwise, so a missing
+    ISIN column can no longer leave the deep app on stale numbers.
     """
     folders = [d for d in (out_dir, publish_dir) if d]
 
@@ -2021,7 +2090,6 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
         all_rows['Symbol'].isin(screened_symbols)
         | (all_rows['Marquee Flag'] == 'Marquee holding')
     ].copy()
-    rows = rows[rows['ISIN'].notna()]
     if len(rows) == 0:
         old_as_of = ''
         for folder in folders:
@@ -2032,23 +2100,35 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
             except Exception:
                 continue
         print(f'      sector_stats.json refreshed ({len(stats)} sectors)')
-        print('      [WARN] stocks.json NOT refreshed - this export has no ISIN column. The deep '
-              'analysis app keeps showing the previous TradingView numbers'
-              + (f' (as of {old_as_of})' if old_as_of else '') +
-              '. Add the ISIN column in TradingView and export again to fix this.')
+        print('      [WARN] no screened or marquee rows, stocks.json left as it was'
+              + (f' (as of {old_as_of})' if old_as_of else ''))
         return
 
     stocks = {}
     for _, r in rows.iterrows():
         entry = {}
         for src, key in DEEP_FEED_FIELDS:
-            entry[key] = None if src in MISSING_COLS else _clean_number(r.get(src))
+            v = None if src in MISSING_COLS else r.get(src)
+            if key in DEEP_FEED_TEXT:
+                # kept as text, so ticker 005930 does not turn into the number 5930.0
+                entry[key] = None if v is None or (isinstance(v, float) and pd.isna(v)) \
+                    else (str(v).strip() or None)
+            else:
+                entry[key] = _clean_number(v)
         entry['marquee'] = bool(r.get('Marquee Flag') == 'Marquee holding')
         entry['marquee_weight_pct'] = _clean_number(r.get('Marquee Wt %'))
         entry['marquee_investors'] = _clean_number(r.get('Investors Holding'))
         entry['screened'] = bool(r['Symbol'] in screened_symbols)
-        # last writer wins on a duplicate ISIN, which only happens for dual listings
-        stocks[r['ISIN']] = entry
+        # Keyed by ISIN where one is known. A name with no ISIN anywhere still goes in,
+        # under a TV: key built from its ticker and currency, so the deep app always has
+        # this run's TradingView numbers for it. The app only treats ISIN-shaped keys as
+        # ISINs. Last writer wins on a duplicate key, which only happens for dual listings.
+        isin = r.get('ISIN')
+        if isinstance(isin, str) and isin:
+            key = isin
+        else:
+            key = f"TV:{str(r['Symbol']).strip().upper()}:{str(r.get('Price - Currency') or '').upper()}"
+        stocks[key] = entry
 
     feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
             'built': stamp['built'], 'source': 'TradingView screener export',
@@ -2057,7 +2137,9 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
         with open(os.path.join(folder, 'stocks.json'), 'w') as fh:
             json.dump(feed, fh, separators=(',', ':'))
     size = os.path.getsize(os.path.join(out_dir, 'stocks.json')) / 1024
-    print(f'      deep feed -> stocks.json ({len(stocks)} names, {size:,.0f} KB) '
+    n_isin = sum(1 for k in stocks if not k.startswith('TV:'))
+    print(f'      deep feed -> stocks.json ({len(stocks)} names, {n_isin} by ISIN, '
+          f'{len(stocks) - n_isin} by ticker, {size:,.0f} KB) '
           f'and sector_stats.json ({len(stats)} sectors)')
 
 
@@ -2598,7 +2680,7 @@ def main():
     print(f'      marquee     : {os.path.basename(p_dr)}')
     print(f'      output to   : {os.path.abspath(args.out_dir)}')
 
-    a = load_universe(p_all)
+    a = load_universe(p_all, feed_dirs=[PUBLISH_DIR, args.out_dir])
     d = load_marquee(p_dr)
     print(f'[2/6] loaded {len(a)} universe rows, {len(d)} unique marquee rows')
 
