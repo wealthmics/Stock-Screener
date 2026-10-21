@@ -137,14 +137,15 @@ SCREEN_UNIVERSE = 'all'    # 'all' = full universe, 'marquee' = superinvestor ho
 # Dataroma scraping. The marquee holdings can be pulled straight off dataroma.com with
 # Selenium instead of exporting a CSV by hand.
 #   'never'   use the dataroma CSV already sitting in DATA_DIR
-#   'auto'    scrape only when there is no dataroma CSV, or the newest one is older than
-#             DATAROMA_MAX_AGE_DAYS. This is the sensible default.
+#   'auto'    scrape unless the newest dataroma CSV is already from today, so the marquee
+#             date always moves to the date of the run. If the scrape fails, the newest
+#             existing file is used and its own date is shown, never a date it does not have.
 #   'always'  scrape on every run
 # Needs Chrome plus:  pip install selenium
 # The scraped file is written into DATA_DIR as dataroma_portfolio_YYYY-MM-DD.csv, so the
 # normal auto-detection picks it up like any other export.
 SCRAPE_DATAROMA = 'auto'
-DATAROMA_MAX_AGE_DAYS = 3
+DATAROMA_MAX_AGE_DAYS = 0     # 0 = refresh on every run that does not already have today's file
 DATAROMA_PAGES = 15        # the scraper stops early on its own if a page comes back empty
 
 # Which threshold set to run.
@@ -2247,332 +2248,620 @@ fetch('data.json' + (location.search||''), {cache:'no-cache'})
 HTML_TEMPLATE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GICS Sector Screener</title>
+<title>Global equity screener | MICS International</title>
 <style>
- :root{--navy:#1f3864;--gold:#bf8f00;--plum:#4b2e83;--line:#d8dee9;--bg:#f6f7fa;}
- *{box-sizing:border-box}
- body{margin:0;font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:#1a1a1a}
- header{background:var(--navy);color:#fff;padding:14px 20px}
- header h1{margin:0;font-size:18px;font-weight:600}
- header p{margin:4px 0 0;font-size:12px;opacity:.8}
- .wrap{display:flex;align-items:flex-start;gap:16px;padding:16px;flex-wrap:wrap}
- .panel{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;width:320px;flex:0 0 320px}
- .main{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;flex:1 1 640px;min-width:0}
- h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--navy);margin:0 0 10px}
- label{display:block;font-size:12px;color:#444;margin:10px 0 3px}
- select,input[type=number],input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:5px;font:13px inherit;background:#fff}
- .frow{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px dashed #eef0f4}
- .frow .nm{flex:1 1 auto;font-size:12px}
- .frow .op{color:var(--gold);font-weight:700;font-size:12px;width:24px;text-align:center}
- .frow input[type=number]{width:78px;padding:4px 6px}
- .frow input[type=checkbox]{accent-color:var(--navy)}
- .btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
- button{padding:7px 11px;border:1px solid var(--navy);background:var(--navy);color:#fff;border-radius:5px;font:12px inherit;cursor:pointer}
- button.ghost{background:#fff;color:var(--navy)}
- button.gold{background:var(--gold);border-color:var(--gold)}
- button:disabled{opacity:.55;cursor:progress}
- button:focus-visible,.msbtn:focus-visible,.msitem input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
- .count{font-size:12px;color:#555;margin:8px 0 10px}
- .count b{color:var(--navy);font-size:18px}
- .pill{display:inline-block;background:#eef2f8;border:1px solid var(--line);border-radius:10px;padding:1px 7px;font-size:11px;margin-right:4px}
- .tw{overflow:auto;max-height:66vh;border:1px solid var(--line);border-radius:6px}
- table{border-collapse:collapse;width:100%;font-size:12px}
- th,td{padding:5px 7px;border-bottom:1px solid #eef0f4;white-space:nowrap;text-align:right}
- th{position:sticky;top:0;background:var(--navy);color:#fff;cursor:pointer;font-weight:600;z-index:2}
- th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
- tbody tr:nth-child(even){background:#f8fafc}
- tbody tr:hover{background:#fff7e0}
- .mqdot{color:var(--gold);font-weight:700}
- td a.tk{color:var(--navy);font-weight:600;text-decoration:none;border-bottom:1px dotted var(--navy)}
- td a.tk:hover{color:var(--gold);border-bottom-color:var(--gold)}
- .warn{background:#fff4f4;border:1px solid #f0c8c8;color:#9c2b2b;padding:9px 11px;border-radius:6px;font-size:12px;margin-bottom:10px}
- .note{font-size:11px;color:#777;margin-top:8px;line-height:1.5}
- .grp{margin-top:14px;padding-top:8px;border-top:2px solid var(--navy)}
+:root{
+ --navy:#1f3864;--navy-deep:#172b4d;--navy-2:#2e4a7d;--gold:#bf8f00;
+ --ink:#1a1a1a;--line:#d8dee9;--line-soft:#e9edf3;--canvas:#f4f6fa;--surface:#fff;
+ --pale:#eef2f8;--up:#1e6b3b;--down:#a12a2a;--focus:#bf8f00;
+ --r:8px;--sans:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{font:14px/1.45 var(--sans);color:var(--ink);background:var(--canvas);-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.num{font-variant-numeric:tabular-nums}
 
- /* sector picker: a closed field that opens into a ticked list */
- .ms{position:relative}
- .msbtn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;
-   color:#1a1a1a;border:1px solid var(--line);border-radius:5px;padding:6px 8px;font:13px inherit;text-align:left}
- .msbtn:hover{border-color:var(--navy)}
- .msbtn .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
- .msbtn .caret{color:var(--navy);font-size:11px;flex:0 0 auto}
- .mspanel{position:absolute;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--navy);
-   border-radius:6px;box-shadow:0 8px 24px rgba(31,56,100,.18);z-index:20;padding:6px 0}
- .mspanel[hidden]{display:none}
- .msacts{display:flex;justify-content:space-between;padding:4px 12px 8px;border-bottom:1px solid #eef0f4;margin-bottom:4px}
- .msacts button{background:none;border:0;color:var(--navy);padding:2px 0;font-weight:600;text-decoration:underline;
-   text-underline-offset:2px}
- .msitem{display:flex;align-items:center;gap:8px;margin:0;padding:5px 12px;font-size:13px;color:#1a1a1a;cursor:pointer}
- .msitem:hover{background:#f3f6fb}
- .msitem input{accent-color:var(--navy);margin:0;width:15px;height:15px}
- .msitem .nm{flex:1 1 auto}
- .msitem .ct{font-size:11px;color:var(--navy);font-variant-numeric:tabular-nums}
- .msitem.other{border-top:1px solid #eef0f4;margin-top:4px;padding-top:8px}
- .ruleby{font-size:11px;color:var(--navy);background:#eef2f8;border-radius:5px;padding:6px 8px;margin-top:8px;line-height:1.45}
+/* ---------- header */
+.top{background:var(--navy-deep);color:#fff;border-bottom:3px solid var(--gold)}
+.top .in{max-width:1680px;margin:0 auto;padding:16px 24px;display:flex;align-items:flex-end;
+ justify-content:space-between;gap:24px;flex-wrap:wrap}
+.brand{display:flex;flex-direction:column;gap:2px}
+.brand .org{font-size:12.5px;font-weight:600;color:#c9d3e3;letter-spacing:.02em}
+.brand h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.01em}
+.dates{display:flex;gap:22px;font-size:12.5px;color:#c9d3e3}
+.dates div{display:flex;flex-direction:column;gap:1px}
+.dates b{color:#fff;font-weight:600;font-size:13.5px}
 
- /* export bar */
- .xbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
- .xbar .lead{font-size:12px;font-weight:600;color:var(--navy);margin-right:2px}
- .xstat{font-size:12px;color:var(--navy)}
- .xstat.err{color:#9c2b2b}
+/* ---------- page grid */
+.page{max-width:1680px;margin:0 auto;padding:20px 24px 40px;display:grid;
+ grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:980px){.page{grid-template-columns:1fr;padding:14px}}
+
+/* ---------- sidebar */
+.side{position:sticky;top:16px;max-height:calc(100vh - 32px);overflow:auto;
+ background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+@media (max-width:980px){.side{position:static;max-height:none}}
+.blk{border-bottom:1px solid var(--line-soft)}
+.blk>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;
+ gap:10px;padding:14px 16px;font-weight:650;color:var(--navy);font-size:14px;user-select:none}
+.blk>summary::-webkit-details-marker{display:none}
+.blk>summary .sv{margin-left:auto;font-weight:500;font-size:12.5px;color:var(--navy-2);text-align:right;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
+.blk>summary::after{content:"";width:7px;height:7px;border-right:2px solid var(--navy);
+ border-bottom:2px solid var(--navy);transform:rotate(45deg);margin:0 2px 3px 4px;flex:0 0 auto;transition:transform .15s}
+.blk[open]>summary::after{transform:rotate(-135deg);margin-bottom:-3px}
+.bd{padding:0 16px 16px}
+.row-acts{display:flex;gap:14px;margin:-4px 0 8px}
+.link{background:none;border:0;padding:0;color:var(--navy);font-weight:600;font-size:12.5px;cursor:pointer;
+ text-decoration:underline;text-underline-offset:3px;text-decoration-color:#9fb0cc}
+.link:hover{text-decoration-color:var(--navy)}
+
+.tick{display:flex;align-items:center;gap:10px;padding:6px 8px;margin:0 -8px;border-radius:6px;cursor:pointer;font-size:13.5px}
+.tick:hover{background:var(--pale)}
+.box{appearance:none;-webkit-appearance:none;width:17px;height:17px;border:1.5px solid #8ea0bf;border-radius:4px;margin:0;
+ flex:0 0 auto;display:grid;place-content:center;background:#fff;cursor:pointer}
+.box:checked{background:var(--navy);border-color:var(--navy)}
+.box:checked::after{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;
+ transform:rotate(-45deg) translate(1px,-1px)}
+.box:disabled{opacity:.4;cursor:not-allowed}
+.tick .t{flex:1 1 auto}
+.tick .c{font-size:12px;color:var(--navy-2)}
+.tick.dis{cursor:not-allowed}
+.tick.dis .t{opacity:.55}
+.hint{font-size:12.5px;color:var(--navy-2);line-height:1.5;margin:6px 0 0}
+.sep{height:1px;background:var(--line-soft);margin:8px 0}
+.search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;margin-top:8px}
+.search:focus{border-color:var(--navy);outline:none;box-shadow:0 0 0 3px #dfe6f2}
+.lab{font-size:12.5px;font-weight:650;color:var(--navy);margin:14px 0 6px}
+
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg label{position:relative;cursor:pointer}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg span{display:block;text-align:center;padding:7px 6px;font-size:13px;font-weight:600;color:var(--navy)}
+.seg label+label span{border-left:1px solid var(--line)}
+.seg input:checked+span{background:var(--navy);color:#fff}
+.seg input:focus-visible+span{outline:2px solid var(--focus);outline-offset:-2px}
+
+.slider .top-l{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.slider output{font-weight:650;color:var(--navy);font-size:13px;white-space:nowrap}
+.slider input[type=range]{width:100%;accent-color:var(--navy);margin:8px 0 2px}
+.slider .ends{display:flex;justify-content:space-between;font-size:11.5px;color:var(--navy-2)}
+
+/* criteria */
+.cg h4{margin:16px 0 4px;font-size:12px;font-weight:650;color:var(--gold)}
+.cg h4:first-child{margin-top:2px}
+.crit{display:grid;grid-template-columns:17px minmax(0,1fr) auto;gap:2px 10px;align-items:center;
+ padding:7px 8px;margin:0 -8px;border-radius:6px}
+.crit:hover{background:var(--pale)}
+.crit .nm{font-size:13.5px;cursor:pointer}
+.crit .val{display:flex;align-items:center;gap:5px;justify-self:end}
+.crit .op{color:var(--gold);font-weight:700;width:12px;text-align:center}
+.crit input[type=number]{width:72px;padding:5px 7px;border:1px solid var(--line);border-radius:5px;text-align:right;background:#fff}
+.crit input[type=number]:focus{border-color:var(--navy);outline:none;box-shadow:0 0 0 3px #dfe6f2}
+.crit .u{font-size:12px;color:var(--navy-2);min-width:26px}
+.crit .rng{font-size:12.5px;color:var(--navy);text-align:right;white-space:nowrap}
+.crit .eff{grid-column:2/4;font-size:11.5px;color:var(--navy-2);display:flex;justify-content:space-between;gap:8px}
+.crit .eff .cut{color:var(--down);font-weight:600}
+.crit.off .nm,.crit.off .val,.crit.off .eff{opacity:.45}
+
+.side-foot{display:flex;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--line);background:#fafbfd}
+
+/* ---------- main */
+.main{min-width:0;display:flex;flex-direction:column;gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.sum{padding:18px 20px;display:flex;flex-wrap:wrap;gap:16px 34px;align-items:flex-end;justify-content:space-between}
+.sum .big{display:flex;align-items:baseline;gap:10px}
+.sum .big b{font-size:34px;line-height:1;font-weight:700;color:var(--navy);letter-spacing:-.02em}
+.sum .big span{font-size:15px;color:var(--navy);font-weight:600}
+.sum .rule{font-size:13px;color:var(--navy-2);margin-top:6px;max-width:660px}
+.kpis{display:flex;gap:28px;flex-wrap:wrap}
+.kpi{display:flex;flex-direction:column;gap:2px}
+.kpi b{font-size:18px;font-weight:650;color:var(--ink)}
+.kpi span{font-size:12px;color:var(--navy-2)}
+.secbar{padding:0 20px 16px;display:flex;flex-wrap:wrap;gap:6px}
+.secbar:empty{display:none}
+.chip{display:inline-flex;gap:6px;align-items:baseline;padding:4px 10px;border-radius:999px;background:var(--pale);
+ font-size:12.5px;color:var(--navy)}
+.chip b{font-weight:650}
+
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;
+ border-bottom:1px solid var(--line)}
+.bar .grp{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bar .lead{font-size:13px;font-weight:650;color:var(--navy);margin-right:2px}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:6px;border:1px solid var(--navy);
+ background:var(--navy);color:#fff;font-weight:600;font-size:13px;cursor:pointer;line-height:1.1;text-decoration:none}
+.btn:hover{background:var(--navy-2)}
+.btn.ghost{background:#fff;color:var(--navy)}
+.btn.ghost:hover{background:var(--pale)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.xstat{font-size:12.5px;color:var(--up);font-weight:600}
+.xstat.err{color:var(--down)}
+.pg{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--navy)}
+.pg select{padding:5px 6px;border:1px solid var(--line);border-radius:5px;background:#fff}
+
+.tw{overflow:auto;max-height:calc(100vh - 300px);min-height:260px}
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+th,td{padding:8px 10px;white-space:nowrap;text-align:right;border-bottom:1px solid var(--line-soft)}
+th{position:sticky;top:0;z-index:2;background:#fafbfd;color:var(--navy);font-weight:650;font-size:12px;
+ border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+th:hover{background:var(--pale)}
+th .ar{display:inline-block;width:10px;color:var(--gold)}
+th.l,td.l{text-align:left}
+th.co,td.co{position:sticky;left:0;z-index:1;background:#fff;text-align:left;min-width:230px;max-width:290px;
+ white-space:normal;border-right:1px solid var(--line-soft)}
+th.co{z-index:3;background:#fafbfd}
+tbody tr:hover td,tbody tr:hover td.co{background:#fbf6e8}
+.co a,.co .tk{color:var(--navy);font-weight:700;text-decoration:none}
+.co a:hover{text-decoration:underline;text-underline-offset:3px}
+.co .nm{display:block;font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:265px}
+.star{color:var(--gold);margin-left:5px;font-size:12px}
+td.neg{color:var(--down)}
+td.na{color:#8a96ad}
+.empty{padding:56px 24px;text-align:center}
+.empty h3{margin:0 0 6px;color:var(--navy);font-size:17px}
+.empty p{margin:0 auto;max-width:540px;color:var(--navy-2);font-size:13.5px}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;
+ border-top:1px solid var(--line);font-size:12.5px;color:var(--navy-2)}
+.pager{display:flex;gap:4px;flex-wrap:wrap}
+.pager button{min-width:32px;padding:5px 9px;border:1px solid var(--line);border-radius:5px;background:#fff;
+ color:var(--navy);font-weight:600;cursor:pointer}
+.pager button[aria-current="page"]{background:var(--navy);border-color:var(--navy);color:#fff}
+.pager button:disabled{opacity:.4;cursor:default}
+.pager .gap{padding:5px 2px;color:var(--navy-2)}
+.note{font-size:12px;color:var(--navy-2);padding:0 2px;line-height:1.55;margin:0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
-<header>
- <h1>GICS Sector Screener <span id="asof" style="font-weight:400;opacity:.85;font-size:13px"></span></h1>
- <p>Pick the sectors you want, set the thresholds, then export the result as a formatted Excel workbook or a client-ready PowerPoint. Once you settle on a threshold set, use Copy as Python and paste it into marquee_screener.py.</p>
-</header>
-<div class="wrap">
- <div class="panel">
-  <h2>Sector &amp; region</h2>
-  <label id="mslab">Sectors</label>
-  <div class="ms" id="ms">
-   <button type="button" class="msbtn" id="msbtn" aria-haspopup="true" aria-expanded="false" aria-labelledby="mslab msbtnlab">
-    <span class="lab" id="msbtnlab">All sectors</span><span class="caret">&#9662;</span></button>
-   <div class="mspanel" id="mspanel" role="group" aria-label="Sectors" hidden>
-    <div class="msacts"><button type="button" id="msall">Select all</button><button type="button" id="msnone">Clear</button></div>
-    <div id="mslist"></div>
+<header class="top"><div class="in">
+ <div class="brand"><span class="org">MICS International</span><h1>Global equity screener</h1></div>
+ <div class="dates">
+  <div><span>Company data</span><b id="d-data"></b></div>
+  <div><span>Superinvestor holdings</span><b id="d-mq"></b></div>
+ </div>
+</div></header>
+
+<div class="page">
+<aside class="side" aria-label="Screen settings">
+
+ <details class="blk" open>
+  <summary>Sectors <span class="sv" id="sv-sec"></span></summary>
+  <div class="bd">
+   <div class="row-acts"><button type="button" class="link" id="sec-all">Select all</button>
+    <button type="button" class="link" id="sec-none">Clear</button></div>
+   <div id="sec-list"></div>
+  </div>
+ </details>
+
+ <details class="blk" open>
+  <summary>Market <span class="sv" id="sv-mkt"></span></summary>
+  <div class="bd">
+   <label class="tick"><input class="box" type="checkbox" id="m-us" checked><span class="t">Listed in the US</span><span class="c num" id="c-us"></span></label>
+   <label class="tick"><input class="box" type="checkbox" id="m-non" checked><span class="t">Listed outside the US</span><span class="c num" id="c-non"></span></label>
+   <div class="sep"></div>
+   <label class="tick"><input class="box" type="checkbox" id="m-mq"><span class="t">Only companies superinvestors hold</span><span class="c num" id="c-mq"></span></label>
+   <input class="search" type="search" id="q" placeholder="Search by company or ticker" aria-label="Search by company or ticker">
+  </div>
+ </details>
+
+ <details class="blk" open>
+  <summary>Rules <span class="sv" id="sv-rules"></span></summary>
+  <div class="bd">
+   <div class="lab" style="margin-top:0">Threshold set</div>
+   <div class="seg" role="radiogroup" aria-label="Threshold set">
+    <label><input type="radio" name="preset" value="tuned"><span>Sector-tuned</span></label>
+    <label><input type="radio" name="preset" value="base"><span>Same for all</span></label>
+   </div>
+   <p class="hint" id="preset-hint"></p>
+   <div class="sep"></div>
+   <label class="tick" id="per-wrap"><input class="box" type="checkbox" id="per"><span class="t">Judge each company on its own sector's rules</span></label>
+   <label class="tick"><input class="box" type="checkbox" id="strict"><span class="t">Exclude companies with missing figures</span></label>
+   <div class="lab">Strictness</div>
+   <div class="slider">
+    <div class="top-l"><span class="hint" style="margin:0">Moves every rule at once</span><output id="s-out" for="s-rng">As set</output></div>
+    <input type="range" id="s-rng" min="-25" max="50" step="5" value="0" list="s-ticks" aria-label="Strictness">
+    <datalist id="s-ticks"><option value="-25"></option><option value="0"></option><option value="25"></option><option value="50"></option></datalist>
+    <div class="ends"><span>Stricter</span><span>Looser</span></div>
    </div>
   </div>
-  <div class="ruleby" id="ruleby"></div>
-  <label>Region</label>
-  <select id="region"><option value="all">US + non-US</option><option value="us">US only</option><option value="non">Non-US only</option></select>
-  <label>Universe</label>
-  <select id="mqonly"><option value="0">All stocks</option><option value="1">Marquee holdings only</option></select>
-  <label>Threshold set</label>
-  <select id="preset">
-    <option value="base">Base - every sector identical</option>
-    <option value="tuned">Sector-tuned - relaxed where needed</option>
-  </select>
-  <label style="margin-top:8px" id="perlab"><input type="checkbox" id="persector"> Judge each company on its own sector's rules</label>
-  <label>Missing values</label>
-  <select id="blank"><option value="0">Ignore blanks (loose)</option><option value="1">Blank = reject (strict)</option></select>
-  <label>Search name or ticker</label>
-  <input type="text" id="q" placeholder="e.g. bank, TSM">
+ </details>
 
-  <div class="grp"><h2>Thresholds</h2>
-   <div id="filters"></div>
-   <div class="btns">
-    <button class="ghost" id="reset">Reset to set</button>
-    <button class="ghost" id="loosen">Loosen 25%</button>
-    <button class="ghost" id="allof">All off</button>
-    <button class="gold" id="copy">Copy as Python</button>
+ <details class="blk" open>
+  <summary>Criteria <span class="sv" id="sv-crit"></span></summary>
+  <div class="bd">
+   <div class="row-acts"><button type="button" class="link" id="c-all">Tick all</button>
+    <button type="button" class="link" id="c-none">Untick all</button></div>
+   <div id="crit"></div>
+   <p class="hint">The red figure under each rule is how many companies that rule removes on its own, out of those in the ticked sectors and markets.</p>
+  </div>
+ </details>
+
+ <div class="side-foot">
+  <button type="button" class="link" id="reset">Reset everything</button>
+  <button type="button" class="link" id="copy">Copy rules for the script</button>
+ </div>
+</aside>
+
+<main class="main">
+ <section class="card" aria-live="polite">
+  <div class="sum">
+   <div>
+    <div class="big"><b class="num" id="n">0</b><span id="n-lab">companies pass</span></div>
+    <div class="rule" id="rule-line"></div>
    </div>
-   <div class="note">An unchecked box means that filter is not applied. Copy as Python puts a ready-made threshold block on the clipboard, ready to paste straight into the script.</div>
+   <div class="kpis">
+    <div class="kpi"><b class="num" id="k-us">0</b><span>US listed</span></div>
+    <div class="kpi"><b class="num" id="k-non">0</b><span>Outside the US</span></div>
+    <div class="kpi"><b class="num" id="k-mq">0</b><span>Superinvestor held</span></div>
+    <div class="kpi"><b class="num" id="k-cap">-</b><span>Median market cap</span></div>
+   </div>
   </div>
- </div>
+  <div class="secbar" id="secbar"></div>
+ </section>
 
- <div class="main">
-  <div id="msg"></div>
-  <div class="count"><b id="n">0</b> names clear these filters <span id="split"></span></div>
-  <div class="xbar">
-   <span class="lead">Export</span>
-   <button id="xl">Excel workbook</button>
-   <button id="pp">PowerPoint</button>
-   <button class="ghost" id="csv">CSV</button>
-   <a id="xlsx" href="#" style="display:none"><button class="ghost">Full screener workbook</button></a>
-   <span class="xstat" id="xstat" role="status" aria-live="polite"></span>
+ <section class="card">
+  <div class="bar">
+   <div class="grp">
+    <span class="lead">Export</span>
+    <button class="btn" id="xl" type="button">Excel workbook</button>
+    <button class="btn" id="pp" type="button">PowerPoint</button>
+    <button class="btn ghost" id="csv" type="button">CSV</button>
+    <a id="xlsx" href="#" style="display:none" class="btn ghost">Full screener workbook</a>
+    <span class="xstat" id="xstat" role="status" aria-live="polite"></span>
+   </div>
+   <div class="pg"><label for="per-page">Rows per page</label>
+    <select id="per-page"><option>25</option><option selected>50</option><option>100</option><option>250</option></select></div>
   </div>
-  <div class="btns" style="margin-top:8px"><span class="pill" id="showing"></span></div>
-  <div class="tw" style="margin-top:6px"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
-  <div class="note" id="hint">Click a column heading to sort. The table shows the first 400 rows; every export contains the full list.</div>
- </div>
+  <div class="tw" id="tw"><table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table>
+   <div class="empty" id="empty" hidden><h3 id="empty-h"></h3><p id="empty-p"></p></div></div>
+  <div class="foot"><span id="showing"></span><div class="pager" id="pager"></div></div>
+ </section>
+ <p class="note" id="hint">Click a column heading to sort. Exports always contain every company that passes, not only this page.</p>
+</main>
 </div>
 <script>
 let DATA, F, ROWS, SEC; const IX = {};
-const OTHER = -1;                 // rows whose TradingView sector maps to no GICS sector
-let SEL = new Set();              // selected sector indices, plus OTHER
+const OTHER = -1;                       // rows whose TradingView sector maps to no GICS sector
+const $ = id => document.getElementById(id);
+const STORE = 'mics-screener-v2';
+
+// How each criterion is shown. 'short' is used in exports, 'name' in the sidebar.
+const CRIT = {
+  pe_max:            {g:'Valuation',      name:'P/E, trailing',              short:'P/E',            u:'x'},
+  roe_min:           {g:'Returns',        name:'Return on equity',           short:'ROE',            u:'%'},
+  roa_min:           {g:'Returns',        name:'Return on assets',           short:'ROA',            u:'%'},
+  roic_min:          {g:'Returns',        name:'Return on invested capital', short:'ROIC',           u:'%'},
+  roce_min:          {g:'Returns',        name:'Return on capital employed', short:'ROCE',           u:'%'},
+  gross_margin_min:  {g:'Margins',        name:'Gross margin',               short:'Gross margin',   u:'%'},
+  op_margin_min:     {g:'Margins',        name:'Operating margin',           short:'Op. margin',     u:'%'},
+  net_margin_min:    {g:'Margins',        name:'Net margin',                 short:'Net margin',     u:'%'},
+  fcf_margin_min:    {g:'Margins',        name:'Free cash flow margin',      short:'FCF margin',     u:'%'},
+  current_ratio_min: {g:'Balance sheet',  name:'Current ratio',              short:'Current ratio',  u:'x'},
+  de_max:            {g:'Balance sheet',  name:'Debt to equity',             short:'Debt / equity',  u:'x'},
+  int_cov_min:       {g:'Balance sheet',  name:'Interest cover',             short:'Interest cover', u:'x'},
+  altman_min:        {g:'Quality scores', name:'Altman Z-score',             short:'Altman Z',       u:''},
+  piotroski_min:     {g:'Quality scores', name:'Piotroski F-score',          short:'Piotroski F',    u:'of 9'},
+  mcap_min:          {g:'Size',           name:'Market cap',                 short:'Market cap',     u:'$bn', scale:1e9},
+};
+const GROUPS = ['Valuation','Returns','Margins','Balance sheet','Quality scores','Size'];
+
+const S = { sel:new Set(), us:true, non:true, mq:false, q:'', preset:'tuned', per:true, strict:false,
+            loosen:0, on:{}, val:{}, page:1, perPage:50, sortKey:'mcap', sortDir:-1 };
+let cur = [], lastRuleKey = null;
+
 function boot(d){
   DATA=d; F=DATA.fields; F.forEach((f,i)=>IX[f]=i); ROWS=DATA.rows; SEC=DATA.sectors; init();
 }
-const COLS = [['sym','Ticker'],['name','Company'],['gicsName','GICS'],['ctry','Country'],['mq','Marquee'],['wt','Wt %'],
- ['mcap','Mkt cap'],['pe','P/E'],['fpe','Fwd P/E'],['roic','ROIC'],['roce','ROCE'],['roa','ROA'],['roe','ROE'],
- ['gm','Gross %'],['om','Op %'],['nm','Net %'],['fcfm','FCF %'],['cr','Cur ratio'],['de','D/E'],
- ['ic','Int cov'],['az','Altman Z'],['pf','Piotroski'],['ytd','YTD %'],['y1','1Y %'],['y5','5Y cum %'],['cagr','5Y ann %'],['px','Price'],['ccy','Ccy']];
-let sortKey='mcap', sortDir=-1, cur=[];
 
-// ---------------------------------------------------------------- sector selection
-const realSel = () => [...SEL].filter(i=>i!==OTHER).sort((a,b)=>a-b);
-const allSelected = () => realSel().length===SEC.length && SEL.has(OTHER);
-// The rule set the threshold boxes show. One sector ticked: that sector's own block.
-// Anything wider: the All Sectors block, with the per-sector option available.
-function ruleSector(){
-  const r=realSel();
-  return (r.length===1 && !SEL.has(OTHER)) ? SEC[r[0]] : DATA.allLabel;
+// ---------------------------------------------------------------- formatting
+const nf0 = new Intl.NumberFormat('en-US',{maximumFractionDigits:0});
+const nf1 = new Intl.NumberFormat('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+const nf2 = new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const isNum = v => v!==null && v!==undefined && !Number.isNaN(v);
+function bn(v){ if(!isNum(v)) return '-'; const b=v/1e9;
+  return b>=1000? '$'+nf1.format(b/1000)+'tn' : b>=10? '$'+nf0.format(b)+'bn' : b>=1? '$'+nf1.format(b)+'bn'
+    : '$'+nf0.format(v/1e6)+'m'; }
+function ruleNum(v,u){ // a threshold as people write it
+  if(!isNum(v)) return '';
+  if(u==='$bn') return '$'+(+(v/1e9).toFixed(2))+'bn';
+  const t=+(+v).toFixed(2);
+  return u==='%'? t+'%' : u==='x'? t+'x' : u==='of 9'? t+' of 9' : String(t);
 }
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------------------------------------------------------------- rules
+const realSel = () => [...S.sel].filter(i=>i!==OTHER).sort((a,b)=>a-b);
+const allSel = () => realSel().length===SEC.length && S.sel.has(OTHER);
+function ruleSector(){ const r=realSel(); return (r.length===1 && !S.sel.has(OTHER))? SEC[r[0]] : DATA.allLabel; }
 const isMulti = () => ruleSector()===DATA.allLabel;
-function listNames(names){
-  if(names.length<=1) return names.join('');
-  return names.slice(0,-1).join(', ')+' and '+names[names.length-1];
+const perOn = () => S.per && isMulti();
+const theSet = () => S.preset==='tuned'? DATA.tuned : DATA.base;
+const blockVals = g => Object.assign({}, DATA.defaults, theSet()[g]||{});
+const sectorsInPlay = () => realSel().map(i=>SEC[i]).concat(S.sel.has(OTHER)?[DATA.allLabel]:[]);
+function adj(v,dir){
+  if(!isNum(v)) return null;
+  const x=S.loosen/100, d=Math.abs(v)*x;
+  return +((dir==='min'? v-d : v+d).toFixed(4));
 }
-function selectionLabel(short){
-  const r=realSel();
-  if(!r.length && !SEL.has(OTHER)) return 'No sector selected';
-  if(allSelected()) return 'All sectors';
-  if(r.length===SEC.length) return 'All eleven GICS sectors';
-  const names=r.map(i=>SEC[i]).concat(SEL.has(OTHER)?['Unclassified']:[]);
-  if(short && names.length>2) return names.length+' sectors: '+names.join(', ');
-  return listNames(names);
+// the rules one company is judged on, after ticks and strictness
+function rulesFor(g){
+  const base = perOn()? blockVals(g) : S.val;
+  const out=[];
+  for(const f of DATA.filters){
+    if(!S.on[f.key]) continue;
+    const v=adj(base[f.key], f.dir);
+    if(v===null) continue;
+    out.push({key:f.key, field:f.field, dir:f.dir, val:v});
+  }
+  return out;
 }
-function buildSectorPicker(){
+function resetRules(){
+  S.val = blockVals(ruleSector());
+  for(const f of DATA.filters){
+    // per-sector: every rule starts ticked, and a rule no ticked sector uses is shown disabled
+    S.on[f.key] = perOn()? true : isNum(S.val[f.key]);
+  }
+}
+function ruleKey(){ return [S.preset, ruleSector(), perOn()].join('|'); }
+
+// ---------------------------------------------------------------- sidebar: sectors
+function buildSectors(){
   const counts=new Array(SEC.length).fill(0); let other=0;
   for(const r of ROWS){ const g=r[IX.gics]; if(g===null||g===undefined) other++; else counts[g]++; }
-  const list=document.getElementById('mslist'); list.innerHTML='';
-  const item=(val,name,n,cls)=>{
-    const l=document.createElement('label'); l.className='msitem'+(cls?' '+cls:'');
-    l.innerHTML='<input type="checkbox" value="'+val+'"'+(SEL.has(val)?' checked':'')+'>'+
-      '<span class="nm">'+name+'</span><span class="ct">'+n.toLocaleString()+'</span>';
-    list.appendChild(l);
+  const box=$('sec-list'); box.innerHTML='';
+  const add=(val,name,n)=>{
+    const l=document.createElement('label'); l.className='tick';
+    l.innerHTML='<input class="box" type="checkbox" value="'+val+'"><span class="t">'+esc(name)+
+      '</span><span class="c num">'+nf0.format(n)+'</span>';
+    l.querySelector('input').addEventListener('change',e=>{
+      e.target.checked? S.sel.add(val) : S.sel.delete(val); changed(true);
+    });
+    box.appendChild(l);
   };
-  SEC.forEach((s,i)=>item(i,s,counts[i]));
-  if(other) item(OTHER,'Unclassified (Miscellaneous, Government)',other,'other');
-  list.querySelectorAll('input').forEach(cb=>cb.addEventListener('change',()=>{
-    const v=parseInt(cb.value,10); cb.checked? SEL.add(v) : SEL.delete(v); sectorsChanged();
-  }));
+  SEC.forEach((s,i)=>add(i,s,counts[i]));
+  if(other){ const d=document.createElement('div'); d.className='sep'; box.appendChild(d);
+    add(OTHER,'Unclassified',other); }
 }
-function syncPicker(){
-  document.querySelectorAll('#mslist input').forEach(cb=>cb.checked=SEL.has(parseInt(cb.value,10)));
-  document.getElementById('msbtnlab').textContent=selectionLabel(true);
-  document.getElementById('msbtn').title=selectionLabel(false);
-}
-let lastRuleSector=null;
-function sectorsChanged(){
-  syncPicker();
-  const rs=ruleSector();
-  if(rs!==lastRuleSector){ lastRuleSector=rs; buildFilters(); }
-  updateRuleNote();
-  run();
-}
-function updateRuleNote(){
-  const multi=isMulti(), per=document.getElementById('persector');
-  per.disabled=!multi;
-  document.getElementById('perlab').style.opacity=multi?1:.5;
-  const n=document.getElementById('ruleby');
-  if(!SEL.size){ n.textContent='Tick at least one sector.'; return; }
-  n.textContent = !multi ? 'Thresholds below are the '+ruleSector()+' rules. Edit them freely.'
-    : per.checked ? 'Each company is judged on its own sector\'s rules. Untick the box below to apply the threshold boxes to every company instead.'
-    : 'One rule set, the threshold boxes below, applies to every ticked sector.';
-}
-function openPicker(open){
-  const p=document.getElementById('mspanel'), b=document.getElementById('msbtn');
-  p.hidden=!open; b.setAttribute('aria-expanded', open?'true':'false');
+function syncSectors(){
+  $('sec-list').querySelectorAll('input').forEach(cb=>cb.checked=S.sel.has(parseInt(cb.value,10)));
+  const r=realSel();
+  $('sv-sec').textContent = !S.sel.size? 'None' : allSel()? 'All' :
+    (r.length===1 && !S.sel.has(OTHER))? SEC[r[0]] : S.sel.size+' ticked';
 }
 
-// ---------------------------------------------------------------- thresholds
-function currentSet(){ return document.getElementById('preset').value==='tuned'? DATA.tuned : DATA.base; }
-function sectorDefaults(g){ return Object.assign({}, DATA.defaults, currentSet()[g]||{}); }
-function buildFilters(){
-  const box=document.getElementById('filters'); box.innerHTML='';
-  const d=sectorDefaults(ruleSector());
-  DATA.filters.forEach(f=>{
-    const v=d[f.key], on=(v!==null&&v!==undefined);
-    const row=document.createElement('div'); row.className='frow';
-    row.innerHTML='<input type="checkbox" '+(on?'checked':'')+' data-k="'+f.key+'" aria-label="Use '+f.label+'">'+
-      '<span class="nm">'+f.label+'</span><span class="op">'+(f.dir==='min'?'&ge;':'&le;')+'</span>'+
-      '<input type="number" step="any" data-v="'+f.key+'" value="'+(on?v:'')+'" aria-label="'+f.label+' threshold">';
-    box.appendChild(row);
+// ---------------------------------------------------------------- sidebar: criteria
+function buildCriteria(){
+  const box=$('crit'); box.innerHTML='';
+  const wrap=document.createElement('div'); wrap.className='cg'; box.appendChild(wrap);
+  for(const g of GROUPS){
+    const fs=DATA.filters.filter(f=>CRIT[f.key] && CRIT[f.key].g===g);
+    if(!fs.length) continue;
+    const h=document.createElement('h4'); h.textContent=g; wrap.appendChild(h);
+    for(const f of fs){
+      const m=CRIT[f.key], id='cr-'+f.key;
+      const row=document.createElement('div'); row.className='crit'; row.dataset.k=f.key;
+      row.innerHTML='<input class="box" type="checkbox" id="'+id+'">'+
+        '<label class="nm" for="'+id+'">'+esc(m.name)+'</label>'+
+        '<div class="val"></div><div class="eff"><span class="eff-l"></span><span class="cut num"></span></div>';
+      row.querySelector('.box').addEventListener('change',e=>{
+        S.on[f.key]=e.target.checked;
+        // ticking a rule that has no value yet gives it the default bar, so the tick does something
+        if(e.target.checked && !perOn() && !isNum(S.val[f.key]) && isNum(DATA.defaults[f.key]))
+          S.val[f.key]=DATA.defaults[f.key];
+        changed();
+      });
+      wrap.appendChild(row);
+    }
+  }
+}
+let inputTimer=null;
+function syncCriteria(fails, poolN){
+  const per=perOn(), live=sectorsInPlay();
+  let on=0, avail=0;
+  document.querySelectorAll('#crit .crit').forEach(row=>{
+    const k=row.dataset.k, f=DATA.filters.find(x=>x.key===k), m=CRIT[k];
+    const cb=row.querySelector('.box'), val=row.querySelector('.val');
+    const op='<span class="op">'+(f.dir==='min'?'&ge;':'&le;')+'</span>';
+    let usable=true;
+    if(per){
+      const vals=live.map(g=>blockVals(g)[k]).filter(isNum).map(v=>adj(v,f.dir));
+      usable=vals.length>0;
+      if(!usable){ val.innerHTML='<span class="rng">not used in these sectors</span>'; }
+      else{
+        const lo=Math.min(...vals), hi=Math.max(...vals);
+        const span = lo===hi? ruleNum(lo,m.u)
+          : m.u==='of 9'? ruleNum(lo,'')+' to '+ruleNum(hi,m.u) : ruleNum(lo,m.u)+' to '+ruleNum(hi,m.u);
+        val.innerHTML=op+'<span class="rng num">'+span+'</span>';
+      }
+      row.querySelector('.eff-l').textContent = usable? (live.length>1? 'set by sector' : '') : '';
+    } else {
+      const raw=S.val[k], scale=m.scale||1;
+      if(!val.querySelector('input')){
+        val.innerHTML=op+'<input type="number" step="any" aria-label="'+esc(m.name)+' threshold">'+
+          '<span class="u">'+esc(m.u==='of 9'?'/ 9':m.u)+'</span>';
+        val.querySelector('input').addEventListener('input',e=>{
+          const t=e.target.value.trim();
+          S.val[k]= t===''? null : parseFloat(t)*scale;
+          if(t!=='' && !S.on[k]){ S.on[k]=true; }
+          clearTimeout(inputTimer); inputTimer=setTimeout(()=>changed(),160);
+        });
+      }
+      const inp=val.querySelector('input');
+      if(document.activeElement!==inp) inp.value = isNum(raw)? +(raw/scale).toFixed(4) : '';
+      const eff=adj(raw,f.dir);
+      row.querySelector('.eff-l').textContent = (S.loosen && isNum(raw))? 'applied as '+ruleNum(eff,m.u) : '';
+    }
+    cb.disabled=!usable;
+    cb.checked=usable && !!S.on[k];
+    row.classList.toggle('off', !cb.checked);
+    const n=fails? fails[k]||0 : 0;
+    row.querySelector('.cut').textContent = (cb.checked && poolN)? (n? 'removes '+nf0.format(n) : 'removes none') : '';
+    if(usable){ avail++; if(cb.checked) on++; }
   });
-  box.querySelectorAll('input').forEach(el=>el.addEventListener('input',run));
+  $('sv-crit').textContent = on+' of '+avail+' on';
 }
-function blockFilters(g){
-  const d=sectorDefaults(g), out=[];
-  DATA.filters.forEach(f=>{ const v=d[f.key];
-    if(v!==null&&v!==undefined) out.push({field:f.field,dir:f.dir,val:v,label:f.label,key:f.key}); });
-  return out;
-}
-function activeFilters(){
-  const out=[];
-  document.querySelectorAll('#filters .frow').forEach(r=>{
-    const cb=r.querySelector('input[type=checkbox]'), nb=r.querySelector('input[type=number]');
-    if(!cb.checked||nb.value==='') return;
-    const spec=DATA.filters.find(f=>f.key===cb.dataset.k);
-    out.push({field:spec.field,dir:spec.dir,val:parseFloat(nb.value),label:spec.label,key:spec.key});
-  });
-  return out;
-}
-const perSectorOn = () => document.getElementById('persector').checked && isMulti();
-function cagr(y5){ if(y5===null||y5===undefined) return null; if(y5<=-100) return null;
-  return (Math.pow(1+y5/100,0.2)-1)*100; }
 
 // ---------------------------------------------------------------- the screen
+function changed(rulesMayMove){
+  const key=ruleKey();
+  if(rulesMayMove && key!==lastRuleKey){ lastRuleKey=key; resetRules(); }
+  S.page=1; run(); save();
+}
 function run(){
-  const reg=document.getElementById('region').value;
-  const mq=document.getElementById('mqonly').value==='1';
-  const strict=document.getElementById('blank').value==='1';
-  const q=document.getElementById('q').value.trim().toLowerCase();
-  const perSector=perSectorOn();
-  const fs=activeFilters();
+  const strict=S.strict, q=S.q.trim().toLowerCase(), per=perOn();
+  const common = per? null : rulesFor(null);
   const cache={};
-  const rulesFor=sec=>(cache[sec]=cache[sec]||blockFilters(sec in currentSet()? sec : DATA.allLabel));
+  const fails={}; DATA.filters.forEach(f=>fails[f.key]=0);
+  let poolN=0, nUS=0, nNon=0, nMq=0;
   const out=[];
   for(const r of ROWS){
     const g=r[IX.gics], key=(g===null||g===undefined)? OTHER : g;
-    if(!SEL.has(key)) continue;
-    const isUS = r[IX.ctry]==='United States';
-    if(reg==='us'&&!isUS) continue;
-    if(reg==='non'&&isUS) continue;
-    if(mq && !r[IX.mq]) continue;
+    if(!S.sel.has(key)) continue;
+    const isUS=r[IX.ctry]==='United States';
+    if(isUS) nUS++; else nNon++;
+    if(r[IX.mq]) nMq++;
+    if(isUS? !S.us : !S.non) continue;
+    if(S.mq && !r[IX.mq]) continue;
     if(q && !((r[IX.sym]||'').toLowerCase().includes(q)||(r[IX.name]||'').toLowerCase().includes(q))) continue;
+    poolN++;
+    const sec = key===OTHER? DATA.allLabel : SEC[key];
+    const rules = per? (cache[sec]=cache[sec]||rulesFor(sec)) : common;
     let ok=true, reported=0;
-    const rules = perSector? rulesFor(key===OTHER? DATA.allLabel : SEC[key]) : fs;
     for(const f of rules){
       const v=r[IX[f.field]];
-      if(v===null||v===undefined){ if(strict){ok=false;break;} else continue; }
+      if(v===null||v===undefined){ if(strict){ ok=false; fails[f.key]++; } continue; }
       reported++;
-      if(f.dir==='min'? v< f.val : v> f.val){ok=false;break;}
+      if(f.dir==='min'? v<f.val : v>f.val){ ok=false; fails[f.key]++; }
     }
-    // same data-coverage guard the script applies, so the counts match the workbook
-    if(ok && !strict && rules.length && DATA.minCoverage>0
-       && reported/rules.length < DATA.minCoverage) ok=false;
+    // the same data-coverage guard the script applies, so counts match the workbook
+    if(ok && !strict && rules.length && DATA.minCoverage>0 && reported/rules.length<DATA.minCoverage) ok=false;
     if(ok) out.push(r);
   }
   cur=out;
-  const nus=out.filter(r=>r[IX.ctry]==='United States').length;
-  document.getElementById('n').textContent=out.length.toLocaleString();
-  document.getElementById('split').innerHTML=out.length?
-    '<span class="pill">US '+nus+'</span><span class="pill">Non-US '+(out.length-nus)+'</span>':'';
-  document.getElementById('msg').innerHTML = !SEL.size
-    ? '<div class="warn">No sector is ticked. Open the Sectors list and tick at least one.</div>'
-    : out.length ? '' :
-    '<div class="warn">Nothing cleared these filters. Loosen a threshold - try Loosen 25%, or uncheck ROA and Altman. Banks and utilities never clear an ROA of 10% or debt to equity below 2.</div>';
-  ['xl','pp','csv'].forEach(id=>document.getElementById(id).disabled=!out.length);
-  render();
+  $('c-us').textContent=nf0.format(nUS); $('c-non').textContent=nf0.format(nNon); $('c-mq').textContent=nf0.format(nMq);
+  syncSectors(); syncCriteria(fails, poolN); summary(); renderTable();
 }
-function val(r,k){ if(k==='cagr') return cagr(r[IX.y5]);
-  if(k==='gicsName') return SEC[r[IX.gics]]||'-';
-  return r[IX[k]]; }
-function render(){
-  const th=document.getElementById('thead'); th.innerHTML='';
-  COLS.forEach(([k,l])=>{const e=document.createElement('th');e.textContent=l+(sortKey===k?(sortDir<0?' \u25bc':' \u25b2'):'');
-    e.onclick=()=>{ if(sortKey===k) sortDir=-sortDir; else {sortKey=k;sortDir=-1;} render(); }; th.appendChild(e);});
-  const rows=[...cur].sort((x,y)=>{
-    let a=val(x,sortKey), b=val(y,sortKey);
-    if(a===null||a===undefined) return 1; if(b===null||b===undefined) return -1;
-    if(typeof a==='string') return a.localeCompare(b)*(sortDir<0?-1:1);
-    return (a-b)*(sortDir<0?-1:1);
+
+function summary(){
+  const n=cur.length, us=cur.filter(r=>r[IX.ctry]==='United States').length;
+  $('n').textContent=nf0.format(n);
+  $('n-lab').textContent= n===1? 'company passes' : 'companies pass';
+  $('k-us').textContent=nf0.format(us); $('k-non').textContent=nf0.format(n-us);
+  $('k-mq').textContent=nf0.format(cur.filter(r=>r[IX.mq]).length);
+  const caps=cur.map(r=>r[IX.mcap]).filter(isNum).sort((a,b)=>a-b);
+  $('k-cap').textContent= caps.length? bn(caps[Math.floor(caps.length/2)]) : '-';
+  // by sector
+  const by={}; for(const r of cur){ const s=SEC[r[IX.gics]]||'Unclassified'; by[s]=(by[s]||0)+1; }
+  const order=SEC.concat(['Unclassified']).filter(s=>by[s]);
+  $('secbar').innerHTML = order.length>1? order.map(s=>'<span class="chip">'+esc(s)+' <b class="num">'+nf0.format(by[s])+'</b></span>').join('') : '';
+  // plain description of the rules in force
+  const bits=[S.preset==='tuned'? 'Sector-tuned thresholds' : 'The same thresholds for every sector'];
+  if(perOn()) bits.push('each company judged on its own sector\'s rules');
+  else if(isMulti()) bits.push('one rule set applied to every ticked sector');
+  else bits.push(ruleSector()+' rules');
+  if(S.loosen) bits.push((S.loosen>0? 'loosened by ' : 'tightened by ')+Math.abs(S.loosen)+'%');
+  const off=DATA.filters.filter(f=>!S.on[f.key]).length;
+  const line=bits.join(', ')+'.'+(S.strict? ' Companies missing any screened figure are excluded.' : '');
+  $('rule-line').textContent=line;
+  $('sv-mkt').textContent=(S.us&&S.non? 'US and outside' : S.us? 'US only' : S.non? 'Outside US only' : 'None')+(S.mq?', held':'');
+  $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Same for all')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+'%' : '');
+  $('s-out').textContent= S.loosen===0? 'As set' : (S.loosen>0? 'Looser by ' : 'Stricter by ')+Math.abs(S.loosen)+'%';
+  $('preset-hint').textContent = S.preset==='tuned'
+    ? 'Each sector has bars set near the typical figures of its superinvestor holdings.'
+    : 'One set of bars for every sector. Banks and utilities rarely pass it.';
+  const multi=isMulti();
+  $('per').disabled=!multi; $('per-wrap').classList.toggle('dis',!multi);
+  $('per-wrap').title = multi? '' : 'Tick more than one sector to use this';
+  ['xl','pp','csv'].forEach(id=>$(id).disabled=!n);
+  void off;
+}
+
+// ---------------------------------------------------------------- table
+const COLS = [
+  {k:'co',   h:'Company', cls:'co', sort:r=>(r[IX.name]||'').toLowerCase()},
+  {k:'gics', h:'Sector', cls:'l', sort:r=>SEC[r[IX.gics]]||'zz', fmt:r=>esc(SEC[r[IX.gics]]||'Unclassified')},
+  {k:'ctry', h:'Country', cls:'l', sort:r=>r[IX.ctry]||'', fmt:r=>esc(r[IX.ctry]||'-')},
+  {k:'mcap', h:'Market cap', fmt:r=>bn(r[IX.mcap])},
+  {k:'pe',   h:'P/E', t:'x'}, {k:'fpe', h:'Fwd P/E', t:'x'},
+  {k:'roe',  h:'ROE', t:'p'}, {k:'roa', h:'ROA', t:'p'}, {k:'roic', h:'ROIC', t:'p'},
+  {k:'om',   h:'Op. margin', t:'p'}, {k:'nm', h:'Net margin', t:'p'}, {k:'fcfm', h:'FCF margin', t:'p'},
+  {k:'de',   h:'Debt / equity', t:'n2'}, {k:'ic', h:'Int. cover', t:'x'}, {k:'cr', h:'Current ratio', t:'n2'},
+  {k:'az',   h:'Altman Z', t:'n2'}, {k:'pf', h:'Piotroski', t:'pf'},
+  {k:'y1',   h:'1 year', t:'p', signed:true}, {k:'cagr', h:'5 yr a year', t:'p', signed:true,
+    get:r=>cagr(r[IX.y5])},
+  {k:'px',   h:'Price', fmt:r=>isNum(r[IX.px])? nf2.format(r[IX.px])+' <span class="u">'+esc(r[IX.ccy]||'')+'</span>' : '-',
+    sort:r=>r[IX.px]},
+];
+function cagr(y5){ if(!isNum(y5)||y5<=-100) return null; return (Math.pow(1+y5/100,0.2)-1)*100; }
+const getv = (c,r) => c.get? c.get(r) : r[IX[c.k]];
+function cell(c,r){
+  if(c.k==='co'){
+    const sym=r[IX.sym]||'', star=r[IX.mq]? '<span class="star" title="Held by at least one superinvestor">&#9733;</span>':'';
+    let t='<span class="tk">'+esc(sym)+'</span>';
+    if(DATA.deepUrl){
+      let q='?ticker='+encodeURIComponent(sym);
+      if(r[IX.isin]) q+='&isin='+encodeURIComponent(r[IX.isin]);
+      if(r[IX.ccy]) q+='&ccy='+encodeURIComponent(r[IX.ccy]);
+      t='<a href="'+DATA.deepUrl+'/'+q+'" target="_blank" rel="noopener" title="Open the full analysis of '+esc(sym)+'">'+esc(sym)+'</a>';
+    }
+    return '<td class="co">'+t+star+'<span class="nm" title="'+esc(r[IX.name])+'">'+esc(r[IX.name]||'')+'</span></td>';
+  }
+  if(c.fmt) return '<td class="'+(c.cls||'num')+'">'+c.fmt(r)+'</td>';
+  const v=getv(c,r);
+  if(!isNum(v)) return '<td class="na">-</td>';
+  let s;
+  if(c.t==='x') s=nf1.format(v)+'x';
+  else if(c.t==='p') s=(c.signed&&v>0?'+':'')+nf1.format(v)+'%';
+  else if(c.t==='pf') s=nf0.format(v);
+  else s=nf2.format(v);
+  const neg=(c.t==='p' && v<0) || (c.k==='pe' && v<0);
+  return '<td class="num'+(neg?' neg':'')+'">'+s+'</td>';
+}
+function renderTable(){
+  const th=$('thead');
+  th.innerHTML=COLS.map((c,i)=>'<th class="'+(c.cls||'')+'" data-i="'+i+'" scope="col" aria-sort="'+
+    (S.sortKey===c.k?(S.sortDir<0?'descending':'ascending'):'none')+'">'+esc(c.h)+
+    '<span class="ar">'+(S.sortKey===c.k?(S.sortDir<0?' \u25be':' \u25b4'):'')+'</span></th>').join('');
+  th.querySelectorAll('th').forEach(e=>e.onclick=()=>{
+    const c=COLS[+e.dataset.i];
+    if(S.sortKey===c.k) S.sortDir=-S.sortDir; else { S.sortKey=c.k; S.sortDir=(c.cls==='l'||c.k==='co')?1:-1; }
+    S.page=1; renderTable(); save();
   });
-  const shown=rows.slice(0,400);
-  document.getElementById('showing').textContent='showing '+shown.length+' of '+rows.length;
-  const tb=document.getElementById('tbody'); tb.innerHTML='';
-  for(const r of shown){
-    const tr=document.createElement('tr');
-    tr.innerHTML=COLS.map(([k])=>{
-      let v=val(r,k);
-      if(k==='sym' && DATA.deepUrl){
-        let q='?ticker='+encodeURIComponent(v);
-        const isin=r[IX.isin], ccy=r[IX.ccy];
-        if(isin) q+='&isin='+encodeURIComponent(isin);
-        if(ccy)  q+='&ccy='+encodeURIComponent(ccy);
-        return '<td><a class="tk" target="_blank" rel="noopener" href="'+DATA.deepUrl+'/'+q+
-               '" title="Open the deep analysis for '+v+(isin?' ('+isin+')':'')+'">'+v+'</a></td>';
-      }
-      if(k==='mq') return '<td class="mqdot">'+(v?'\u2605':'')+'</td>';
-      if(v===null||v===undefined) return '<td>-</td>';
-      if(typeof v==='number'){
-        if(k==='mcap') return '<td>'+Math.round(v).toLocaleString()+'</td>';
-        return '<td>'+v.toFixed(2)+'</td>';
-      }
-      return '<td>'+v+'</td>';
-    }).join('');
-    tb.appendChild(tr);
+  const c=COLS.find(x=>x.k===S.sortKey)||COLS[3];
+  const key=c.sort||(r=>getv(c,r));
+  const rows=[...cur].sort((x,y)=>{
+    const a=key(x), b=key(y);
+    const na=(a===null||a===undefined||Number.isNaN(a)), nb=(b===null||b===undefined||Number.isNaN(b));
+    if(na&&nb) return 0; if(na) return 1; if(nb) return -1;
+    if(typeof a==='string') return a.localeCompare(b)*S.sortDir;
+    return (a-b)*S.sortDir;
+  });
+  const pages=Math.max(1,Math.ceil(rows.length/S.perPage));
+  S.page=Math.min(S.page,pages);
+  const from=(S.page-1)*S.perPage, slice=rows.slice(from, from+S.perPage);
+  $('tbody').innerHTML=slice.map(r=>'<tr>'+COLS.map(c=>cell(c,r)).join('')+'</tr>').join('');
+  const empty=!rows.length;
+  $('empty').hidden=!empty; document.querySelector('#tw table').style.display=empty?'none':'';
+  if(empty){
+    if(!S.sel.size){ $('empty-h').textContent='No sector is ticked';
+      $('empty-p').textContent='Tick at least one sector on the left to start the screen.'; }
+    else if(!S.us && !S.non){ $('empty-h').textContent='No market is ticked';
+      $('empty-p').textContent='Tick US, outside the US, or both, under Market.'; }
+    else { $('empty-h').textContent='No company passes these rules';
+      $('empty-p').textContent='Move the strictness slider towards looser, or untick the rule that removes the most companies. Its count is shown in red under each criterion.'; }
+  }
+  $('showing').textContent= empty? '' : 'Showing '+nf0.format(from+1)+' to '+nf0.format(from+slice.length)+' of '+nf0.format(rows.length);
+  // pager with a window of page numbers
+  const pg=$('pager'); pg.innerHTML='';
+  if(pages>1){
+    const btn=(label,p,cur_,dis)=>{ const b=document.createElement('button'); b.type='button'; b.textContent=label;
+      if(cur_) b.setAttribute('aria-current','page'); b.disabled=!!dis;
+      b.onclick=()=>{ S.page=p; renderTable(); $('tw').scrollTop=0; }; pg.appendChild(b); };
+    btn('Previous',S.page-1,false,S.page===1);
+    const show=new Set([1,pages,S.page-1,S.page,S.page+1].filter(p=>p>=1&&p<=pages));
+    let last=0;
+    [...show].sort((a,b)=>a-b).forEach(p=>{ if(p-last>1){ const s=document.createElement('span'); s.className='gap'; s.textContent='...'; pg.appendChild(s);} btn(String(p),p,p===S.page); last=p; });
+    btn('Next',S.page+1,false,S.page===pages);
   }
 }
 
@@ -2585,30 +2874,28 @@ const LIBS = {
 };
 function loadLib(name){
   if(window[name]) return Promise.resolve(window[name]);
-  const urls=LIBS[name];
-  return urls.reduce((p,url)=>p.catch(()=>new Promise((res,rej)=>{
+  return LIBS[name].reduce((p,url)=>p.catch(()=>new Promise((res,rej)=>{
     const s=document.createElement('script'); s.src=url; s.async=true;
-    s.onload=()=> window[name]? res(window[name]) : rej(new Error('loaded but empty'));
+    s.onload=()=> window[name]? res(window[name]) : rej(new Error('empty'));
     s.onerror=()=>{ s.remove(); rej(new Error('blocked')); };
     document.head.appendChild(s);
-  })), Promise.reject()).catch(()=>{ throw new Error('Could not load the '+name+
-    ' library. Exports need an internet connection the first time; check the connection or a firewall blocking cdn.jsdelivr.net.'); });
+  })), Promise.reject()).catch(()=>{ throw new Error('Could not load the export library. The first export needs an internet connection; check that cdn.jsdelivr.net is not blocked.'); });
+}
+function selectionLabel(){
+  const r=realSel();
+  if(allSel()) return 'All sectors';
+  if(r.length===SEC.length) return 'All eleven GICS sectors';
+  const names=r.map(i=>SEC[i]).concat(S.sel.has(OTHER)?['Unclassified']:[]);
+  return names.length<=1? names.join('') : names.slice(0,-1).join(', ')+' and '+names[names.length-1];
 }
 function exportData(){
-  const ruleTxt=f=>(f.dir==='min'?'\u2265 ':'\u2264 ')+f.val;
-  const per=perSectorOn();
-  let rules;
-  if(per){
-    rules=realSel().map(i=>({sector:SEC[i], rules:Object.fromEntries(blockFilters(SEC[i]).map(f=>[f.label,ruleTxt(f)]))}));
-    if(SEL.has(OTHER)) rules.push({sector:'Unclassified ('+DATA.allLabel+' rules)',
-      rules:Object.fromEntries(blockFilters(DATA.allLabel).map(f=>[f.label,ruleTxt(f)]))});
-  } else {
-    rules=[{sector: isMulti()? 'Every ticked sector' : ruleSector(),
-            rules:Object.fromEntries(activeFilters().map(f=>[f.label,ruleTxt(f)]))}];
-  }
-  const regTxt={all:'US and non-US', us:'US listed only', non:'Non-US listed only'}[document.getElementById('region').value];
-  const tuned=document.getElementById('preset').value==='tuned';
-  const strict=document.getElementById('blank').value==='1';
+  const txt=(k,f,v)=>(f.dir==='min'?'\u2265 ':'\u2264 ')+ruleNum(v,CRIT[k].u);
+  const asRules=list=>Object.fromEntries(list.map(x=>{ const f=DATA.filters.find(y=>y.key===x.key);
+    return [CRIT[x.key].short, txt(x.key,f,x.val)]; }));
+  const rules = perOn()
+    ? sectorsInPlay().map(g=>({sector: g===DATA.allLabel? 'Unclassified' : g, rules: asRules(rulesFor(g))}))
+    : [{sector: isMulti()? 'Every ticked sector' : ruleSector(), rules: asRules(rulesFor(null))}];
+  const strictTxt = S.loosen? (S.loosen>0? ', loosened by ' : ', tightened by ')+Math.abs(S.loosen)+'%' : '';
   const rows=cur.map(r=>({
     sym:r[IX.sym], name:r[IX.name], sector:SEC[r[IX.gics]]||'Unclassified',
     ind:(DATA.industries||[])[r[IX.ind]]||'', ctry:r[IX.ctry], mq:r[IX.mq]?1:0,
@@ -2618,109 +2905,126 @@ function exportData(){
     ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy]}));
   return {rows, meta:{
     asOf:DATA.stamp.data, marqueeAsOf:DATA.stamp.marquee, sectorOrder:SEC.concat(['Unclassified']),
-    sectorsLabel:selectionLabel(false), region:regTxt,
-    universe:document.getElementById('mqonly').value==='1'? 'Marquee holdings only' : 'All stocks',
-    mode: tuned? 'Sector-tuned thresholds' : 'Base thresholds, the same for every sector',
-    ruleBasis: per? 'Each company judged on its own sector\'s rules'
-             : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'
-             : 'The '+ruleSector()+' rules, as set on screen',
-    blankPolicy: strict? 'A blank value rejects the company'
+    sectorsLabel:selectionLabel(),
+    region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
+    universe:S.mq? 'Superinvestor holdings only' : 'All stocks',
+    mode:(S.preset==='tuned'? 'Sector-tuned thresholds' : 'The same thresholds for every sector')+strictTxt,
+    ruleBasis: perOn()? 'Each company judged on its own sector\'s rules'+strictTxt
+             : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'+strictTxt
+             : 'The '+ruleSector()+' rules, as set on screen'+strictTxt,
+    blankPolicy: S.strict? 'A company missing any screened figure is excluded'
       : 'Blanks ignored, but at least '+Math.round(DATA.minCoverage*100)+'% of the screened figures must be reported',
-    search: document.getElementById('q').value.trim(),
-    rules, ruleLabels: DATA.filters.map(f=>f.label)}};
+    search:S.q.trim(), rules, ruleLabels: DATA.filters.map(f=>CRIT[f.key].short)}};
 }
 function fileStem(){
   const r=realSel();
-  const tag = allSelected()||r.length>3 ? 'sectors' : r.map(i=>SEC[i].replace(/\s+/g,'-')).join('_');
+  const tag=(allSel()||r.length>3)? 'sectors' : r.map(i=>SEC[i].replace(/\s+/g,'-')).join('_')||'screen';
   return 'MICS_screen_'+tag+'_'+DATA.stamp.iso;
 }
-function status(text, err){ const s=document.getElementById('xstat'); s.textContent=text; s.className='xstat'+(err?' err':''); }
-async function doExport(btn, kind){
-  const label=btn.textContent; btn.disabled=true; btn.textContent='Building...';
-  status('');
+function status(t,err){ const s=$('xstat'); s.textContent=t; s.className='xstat'+(err?' err':''); }
+async function doExport(btn,kind){
+  const label=btn.textContent; btn.disabled=true; btn.textContent='Preparing...'; status('');
   try{
     const D=exportData();
     if(kind==='xl'){
-      const ExcelJS=await loadLib('ExcelJS');
-      const buf=await XP.workbook(ExcelJS, D);
-      const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fileStem()+'.xlsx';
-      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
-      status('Excel workbook downloaded, '+D.rows.length.toLocaleString()+' names.');
+      const buf=await XP.workbook(await loadLib('ExcelJS'), D);
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+      a.download=fileStem()+'.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+      status('Excel workbook saved, '+nf0.format(D.rows.length)+' companies.');
     } else {
-      const P=await loadLib('PptxGenJS');
-      const pres=XP.deck(P, D);
-      await pres.writeFile({fileName: fileStem()+'.pptx'});
-      status('PowerPoint downloaded.');
+      await XP.deck(await loadLib('PptxGenJS'), D).writeFile({fileName:fileStem()+'.pptx'});
+      status('PowerPoint saved.');
     }
   } catch(e){ status(e.message||String(e), true); }
-  finally{ btn.disabled=false; btn.textContent=label; }
+  finally{ btn.disabled=!cur.length; btn.textContent=label; }
 }
-document.getElementById('xl').onclick=e=>doExport(e.currentTarget,'xl');
-document.getElementById('pp').onclick=e=>doExport(e.currentTarget,'pp');
-document.getElementById('csv').onclick=()=>{
-  const head=COLS.map(c=>c[1]).join(',');
-  const body=cur.map(r=>COLS.map(([k])=>{
-    let v=val(r,k); if(v===null||v===undefined) return '';
-    if(typeof v==='string'&&/[",]/.test(v)) return '"'+v.replace(/"/g,'""')+'"';
-    return v;
-  }).join(',')).join('\n');
-  const b=new Blob([head+'\n'+body],{type:'text/csv'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(b);
-  a.download=fileStem()+'.csv';a.click();
-};
+function downloadCsv(){
+  const head=['Ticker','Company','Sector','Country','Market cap (USD)','P/E','Fwd P/E','ROE %','ROA %','ROIC %',
+    'Op margin %','Net margin %','FCF margin %','Debt/equity','Interest cover','Current ratio','Altman Z','Piotroski',
+    '1 year %','5 year a year %','Price','Currency','Superinvestor held','ISIN'];
+  const q=v=>{ if(v===null||v===undefined||Number.isNaN(v)) return ''; const s=String(v);
+    return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const body=cur.map(r=>[r[IX.sym],r[IX.name],SEC[r[IX.gics]]||'Unclassified',r[IX.ctry],r[IX.mcap],r[IX.pe],r[IX.fpe],
+    r[IX.roe],r[IX.roa],r[IX.roic],r[IX.om],r[IX.nm],r[IX.fcfm],r[IX.de],r[IX.ic],r[IX.cr],r[IX.az],r[IX.pf],
+    r[IX.y1],cagr(r[IX.y5]),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+head.join(',')+'\n'+body.join('\n')],{type:'text/csv'}));
+  a.download=fileStem()+'.csv'; a.click();
+  status('CSV saved, '+nf0.format(cur.length)+' companies.');
+}
+function copyRules(){
+  const where=S.preset==='tuned'? 'SECTOR_PRESETS' : 'SECTOR_OVERRIDES';
+  const block=(g, base)=>{
+    const lines=DATA.filters.map(f=>{
+      const v = S.on[f.key]? adj(base[f.key], f.dir) : null;
+      return "        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+': '+(v===null?'None':v)+',';
+    });
+    return "    '"+g+"': {\n"+lines.join('\n')+"\n    },";
+  };
+  const txt = perOn()? sectorsInPlay().map(g=>block(g, blockVals(g))).join('\n\n') : block(ruleSector(), S.val);
+  const done=()=>status('Rules copied. Paste them inside '+where+' in marquee_screener.py.');
+  navigator.clipboard? navigator.clipboard.writeText(txt).then(done,()=>prompt('Copy these rules:',txt)) : prompt('Copy these rules:',txt);
+}
 
-// ---------------------------------------------------------------- controls
-document.getElementById('copy').onclick=()=>{
-  const g=ruleSector();
-  const act=activeFilters();
-  const lines=act.map(f=>"        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+': '+f.val+',');
-  const offs=DATA.filters.filter(f=>!act.some(a=>a.key===f.key))
-    .map(f=>"        '"+f.key+"'"+' '.repeat(Math.max(1,20-f.key.length))+": None,");
-  const txt="    '"+g+"': {\n"+lines.concat(offs).join('\n')+"\n    },";
-  const where=document.getElementById('preset').value==='tuned'?'SECTOR_PRESETS':'SECTOR_OVERRIDES';
-  navigator.clipboard.writeText(txt).then(
-    ()=>alert('Copied. Paste this inside '+where+' in marquee_screener.py:\n\n'+txt),
-    ()=>alert('Clipboard blocked, copy this manually:\n\n'+txt));
-};
-document.getElementById('reset').onclick=()=>{buildFilters();run();};
-document.getElementById('allof').onclick=()=>{
-  document.querySelectorAll('#filters input[type=checkbox]').forEach(c=>c.checked=false); run();};
-document.getElementById('loosen').onclick=()=>{
-  document.querySelectorAll('#filters .frow').forEach(r=>{
-    const cb=r.querySelector('input[type=checkbox]'), nb=r.querySelector('input[type=number]');
-    if(!cb.checked||nb.value==='') return;
-    const spec=DATA.filters.find(f=>f.key===cb.dataset.k);
-    const v=parseFloat(nb.value);
-    nb.value=+(spec.dir==='min'? v*0.75 : v*1.25).toFixed(2);
-  }); run();};
-['region','mqonly','blank','preset','persector'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{
-  if(id==='preset') buildFilters(); if(id==='persector') updateRuleNote(); run();}));
-document.getElementById('q').addEventListener('input',run);
-document.getElementById('msbtn').addEventListener('click',()=>openPicker(document.getElementById('mspanel').hidden));
-document.getElementById('msall').onclick=()=>{ SEL=new Set(SEC.map((_,i)=>i).concat([OTHER])); sectorsChanged(); };
-document.getElementById('msnone').onclick=()=>{ SEL=new Set(); sectorsChanged(); };
-document.addEventListener('click',e=>{ if(!document.getElementById('ms').contains(e.target)) openPicker(false); });
-document.addEventListener('keydown',e=>{ if(e.key==='Escape') openPicker(false); });
+// ---------------------------------------------------------------- remember settings
+function save(){
+  try{ localStorage.setItem(STORE, JSON.stringify({sel:[...S.sel], us:S.us, non:S.non, mq:S.mq, preset:S.preset,
+    per:S.per, strict:S.strict, loosen:S.loosen, on:S.on, val:S.val, perPage:S.perPage, sortKey:S.sortKey,
+    sortDir:S.sortDir, nsec:SEC.length})); }catch(e){}
+}
+function restore(){
+  try{
+    const o=JSON.parse(localStorage.getItem(STORE)||'null');
+    if(!o || o.nsec!==SEC.length) return false;
+    Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
+      loosen:o.loosen||0, on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1});
+    return true;
+  }catch(e){ return false; }
+}
+function defaults(){
+  Object.assign(S,{sel:new Set(SEC.map((_,i)=>i).concat([OTHER])), us:true, non:true, mq:false, q:'',
+    preset:DATA.mode, per:DATA.perSector, strict:DATA.blankFails, loosen:0, page:1, perPage:50, sortKey:'mcap', sortDir:-1});
+  resetRules();
+}
+function syncControls(){
+  $('m-us').checked=S.us; $('m-non').checked=S.non; $('m-mq').checked=S.mq; $('q').value=S.q;
+  document.querySelectorAll('input[name=preset]').forEach(r=>r.checked=r.value===S.preset);
+  $('per').checked=S.per; $('strict').checked=S.strict; $('s-rng').value=S.loosen;
+  $('per-page').value=String(S.perPage);
+}
 
+// ---------------------------------------------------------------- wiring
 function init(){
-  document.getElementById('asof').textContent =
-    '  -  updated as of ' + DATA.stamp.data + '  (marquee list ' + DATA.stamp.marquee + ')';
-  if(DATA.deepUrl){
-    document.getElementById('hint').innerHTML =
-      'Click a <b>ticker</b> to open the live deep analysis for that company. Click a column heading to sort. '
-      + 'The table shows the first 400 rows; every export contains the full list.';
-  }
-  if(DATA.xlsxUrl){ const a=document.getElementById('xlsx');
-    a.href=DATA.xlsxUrl; a.style.display='inline-block'; }
-  SEL=new Set(SEC.map((_,i)=>i).concat([OTHER]));
-  buildSectorPicker();
-  document.getElementById('preset').value = DATA.mode;
-  document.getElementById('persector').checked = DATA.perSector;
-  document.getElementById('blank').value = DATA.blankFails? '1':'0';
-  lastRuleSector=ruleSector();
-  syncPicker(); buildFilters(); updateRuleNote();
-  run();
+  $('d-data').textContent=DATA.stamp.data; $('d-mq').textContent=DATA.stamp.marquee;
+  if(DATA.xlsxUrl){ const a=$('xlsx'); a.href=DATA.xlsxUrl; a.style.display=''; }
+  if(DATA.deepUrl) $('hint').textContent='Click a ticker to open its full analysis. Click a column heading to sort. Exports always contain every company that passes, not only this page.';
+  buildSectors(); buildCriteria();
+  if(!restore()) defaults();
+  lastRuleKey=ruleKey();
+  syncControls(); run();
+
+  $('sec-all').onclick=()=>{ S.sel=new Set(SEC.map((_,i)=>i).concat([OTHER])); changed(true); };
+  $('sec-none').onclick=()=>{ S.sel=new Set(); changed(true); };
+  $('m-us').onchange=e=>{ S.us=e.target.checked; changed(); };
+  $('m-non').onchange=e=>{ S.non=e.target.checked; changed(); };
+  $('m-mq').onchange=e=>{ S.mq=e.target.checked; changed(); };
+  let qt=null; $('q').oninput=e=>{ S.q=e.target.value; clearTimeout(qt); qt=setTimeout(()=>changed(),150); };
+  document.querySelectorAll('input[name=preset]').forEach(r=>r.onchange=e=>{ S.preset=e.target.value; lastRuleKey=null; changed(true); });
+  $('per').onchange=e=>{ S.per=e.target.checked; changed(true); };
+  $('strict').onchange=e=>{ S.strict=e.target.checked; changed(); };
+  $('s-rng').oninput=e=>{ S.loosen=parseInt(e.target.value,10); clearTimeout(inputTimer); inputTimer=setTimeout(()=>changed(),60); };
+  $('c-all').onclick=()=>{ DATA.filters.forEach(f=>S.on[f.key]=true);
+    if(!perOn()) DATA.filters.forEach(f=>{ if(!isNum(S.val[f.key])) S.val[f.key]=isNum(DATA.defaults[f.key])? DATA.defaults[f.key] : null; });
+    changed(); };
+  $('c-none').onclick=()=>{ DATA.filters.forEach(f=>S.on[f.key]=false); changed(); };
+  $('reset').onclick=()=>{ try{ localStorage.removeItem(STORE); }catch(e){} defaults(); lastRuleKey=ruleKey(); syncControls(); S.page=1; run(); status('Settings reset.'); };
+  $('copy').onclick=copyRules;
+  $('per-page').onchange=e=>{ S.perPage=parseInt(e.target.value,10); S.page=1; renderTable(); save(); };
+  $('xl').onclick=e=>doExport(e.currentTarget,'xl');
+  $('pp').onclick=e=>doExport(e.currentTarget,'pp');
+  $('csv').onclick=downloadCsv;
 }
 
 /*EXPORT_START*/
