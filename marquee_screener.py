@@ -809,8 +809,15 @@ RULE_TARGETS = {k: (50, None) for k in (
     'pe_max', 'roe_min', 'roic_min', 'roce_min', 'roa_min', 'gross_margin_min', 'op_margin_min',
     'net_margin_min', 'fcf_margin_min', 'altman_min', 'piotroski_min', 'current_ratio_min',
     'de_max', 'int_cov_min')}
-# Per sector replacements for RULE_TARGETS, e.g. {'Energy': {'de_max': (40, None)}}
-SECTOR_TARGETS = {}
+# Fewer rules make a sector easier to pass: with 13 rules at the median about 3% of a sector
+# gets through, with 5 rules about 10% does. Sectors judged on fewer rules therefore get a
+# higher percentile on each, so passing is about as hard everywhere (2.5% to 3.5% of the
+# sector, 22 October 2026 data). Financials 5 rules -> 70th, Real Estate and Utilities
+# 9 rules -> 55th. The run log shows each sector's pass count; recheck these after big data changes.
+SECTOR_PERCENTILE = {'Financials': 70, 'Real Estate': 55, 'Utilities': 55}
+# Per sector replacements for RULE_TARGETS, built from SECTOR_PERCENTILE. Add hand entries
+# the same way, e.g. SECTOR_TARGETS['Energy']['de_max'] = (40, None).
+SECTOR_TARGETS = {g: {k: (t, None) for k in RULE_TARGETS} for g, t in SECTOR_PERCENTILE.items()}
 
 # Every rule is used unless there is a stated reason not to (RULE_NOT_USED_WHY below).
 _CORE = ['pe_max', 'roic_min', 'roe_min', 'roa_min', 'gross_margin_min', 'op_margin_min',
@@ -3094,7 +3101,7 @@ function openMatrix(){
     r.onchange=e=>{ const main=document.querySelector('input[name=preset][value='+e.target.value+']');
       if(main && !main.checked) main.click(); openMatrix(); }; });
   $('mx-sub').textContent = (S.preset==='tuned'
-    ? 'Each sector has its own bars: the median company of that sector (P/E: the median of its quality peers). Computed from today\'s data'
+    ? 'Each sector has its own bars: the median company of that sector (P/E: the median of its quality peers). Financials sit at the 70th percentile and Real Estate and Utilities at the 55th, because they are judged on fewer rules. Computed from today\'s data'
     : 'One set of bars for every sector: the median company of the whole market')
     + (S.loosen? ', moved '+Math.abs(S.loosen)+' percentile points '+(S.loosen>0?'looser':'stricter')+' by the strictness slider' : '')
     + '. Where a rule is not used, the cell says why; hover over it for the full reason.';
@@ -3255,10 +3262,11 @@ function summary(){
   const beat=50-S.loosen, grp=S.preset==='tuned'? 'its own sector' : 'the whole market';
   $('s-mid').textContent = 'Median';
   $('s-out').textContent = S.loosen===0? 'Median' : 'Beat '+beat+'%';
-  $('s-sub').textContent = S.loosen===0? 'A company must beat the typical company of '+grp+' on every rule'
-                                       : 'A company must beat '+beat+'% of '+grp+' on every rule';
+  const note = S.preset==='tuned'? ' (banks, property and utilities start higher)' : '';
+  $('s-sub').textContent = (S.loosen===0? 'A company must beat the typical company of '+grp+' on every rule'
+                                        : 'A company must beat '+beat+'% of '+grp+' on every rule')+note;
   $('preset-hint').textContent = S.preset==='tuned'
-    ? 'Each sector gets its own bars: the median company of that sector, on only the measures that fit its business. P/E is compared with the sector\'s quality peers. Recomputed from the data on every run.'
+    ? 'Each sector gets its own bars: the median company of that sector, on only the measures that fit its business. P/E is compared with the sector\'s quality peers. Financials, Real Estate and Utilities use fewer rules, so each of their bars sits higher (70th, 55th, 55th percentile) to keep passing about as hard as elsewhere. Recomputed on every run.'
     : 'One set of bars for every sector: the median company of the whole market. The like-for-like view, so banks, property and utilities rarely pass.';
   const multi=isMulti();
   $('per').disabled=!multi; $('per-wrap').classList.toggle('dis',!multi);
@@ -3405,7 +3413,7 @@ function exportData(){
     sectorsLabel:selectionLabel(),
     region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
     universe:S.mq? 'Superinvestor holdings only' : 'All stocks',
-    mode:(S.preset==='tuned'? 'Sector-tuned: every bar is the median of its own sector' : 'The same thresholds for every sector: the whole-market median')+strictTxt,
+    mode:(S.preset==='tuned'? 'Sector-tuned: every bar is the median of its own sector (Financials 70th, Real Estate and Utilities 55th percentile)' : 'The same thresholds for every sector: the whole-market median')+strictTxt,
     ruleBasis: perOn()? 'Each company judged on its own sector\'s rules'+strictTxt
              : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'+strictTxt
              : 'The '+ruleSector()+' rules, as set on screen'+strictTxt,
