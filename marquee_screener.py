@@ -2751,9 +2751,9 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
    <div class="lab">Strictness</div>
    <div class="slider">
     <div class="top-l"><span class="hint" style="margin:0" id="s-sub">Moves every rule at once</span><output id="s-out" for="s-rng">As set</output></div>
-    <input type="range" id="s-rng" min="-20" max="30" step="5" value="0" list="s-ticks" aria-label="Strictness">
-    <datalist id="s-ticks"><option value="-20"></option><option value="0"></option><option value="30"></option></datalist>
-    <div class="ends"><span>Stricter</span><span>Looser</span></div>
+    <input type="range" id="s-rng" min="-25" max="25" step="5" value="0" list="s-ticks" aria-label="Strictness">
+    <datalist id="s-ticks"><option value="-25"></option><option value="0"></option><option value="25"></option></datalist>
+    <div class="ends"><span>Stricter</span><span id="s-mid">Median</span><span>Looser</span></div>
    </div>
   </div>
  </details>
@@ -2906,7 +2906,7 @@ function pctOf(v,d){
 function valAt(p,d){ p=Math.max(0,Math.min(100,p)); const x=p/5, i=Math.min(19,Math.floor(x)); return d[i]+(d[i+1]-d[i])*(x-i); }
 function adj(v,key,g){
   if(!isNum(v)) return null;
-  if(!S.loosen || (DATA.fixed||{})[key]!==undefined || ((DATA.fixedBy||{})[g]||[]).includes(key)) return v;
+  if(!S.loosen || (DATA.fixed||{})[key]!==undefined || (S.preset==='tuned' && ((DATA.fixedBy||{})[g]||[]).includes(key))) return v;
   const d=distOf(g,key); if(!d) return v;
   const f=DATA.filters.find(x=>x.key===key);
   const p=pctOf(v,d), p2=f.dir==='min'? p-S.loosen : p+S.loosen;
@@ -3218,10 +3218,16 @@ function summary(){
   $('rule-line').textContent=line;
   $('sv-mkt').textContent=(S.us&&S.non? 'US and outside' : S.us? 'US only' : S.non? 'Outside US only' : 'None')+(S.mq?', held':'');
   $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Medians')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+' pts' : '');
-  $('s-out').textContent= S.loosen===0? 'As set' : (S.loosen>0? 'Looser by ' : 'Stricter by ')+Math.abs(S.loosen)+' points';
+  // base: every bar starts at the sector median, so the slider reads as "beat X% of the sector"
+  const beat=50-S.loosen;
+  $('s-mid').textContent = S.preset==='tuned'? 'As tuned' : 'Median';
+  $('s-out').textContent = S.preset==='tuned'
+    ? (S.loosen===0? 'As tuned' : Math.abs(S.loosen)+' pts '+(S.loosen>0? 'looser' : 'stricter'))
+    : (S.loosen===0? 'Median' : 'Beat '+beat+'% of sector');
   $('s-sub').textContent = S.preset==='tuned'
-    ? (S.loosen? 'Percentile bars moved '+Math.abs(S.loosen)+' points; fixed floors stay put' : 'Moves the percentile bars; fixed floors stay put')
-    : 'Moves every bar within its sector\'s spread';
+    ? 'Moves each percentile rule from its own start; fixed floors stay put'
+    : (S.loosen===0? 'A company must beat the typical company of its sector on every rule'
+                   : 'A company must beat '+beat+'% of its sector on every rule');
   $('preset-hint').textContent = S.preset==='tuned'
     ? 'Each sector uses only the measures that fit its business. Quality rules (ROIC, ROE, margins) have to beat most of the sector, safety floors only remove weak balance sheets, and P/E only drops the most expensive 30%. Bars are recomputed from the data on every run.'
     : 'Every bar is the median company of its own sector, as of the last time the numbers were written. A pass means better than a typical peer on every measure.';
@@ -3442,7 +3448,7 @@ function restore(){
     const o=JSON.parse(localStorage.getItem(STORE)||'null');
     if(!o || o.nsec!==SEC.length) return false;
     Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
-      loosen:o.loosen||0, on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
+      loosen:Math.max(-25,Math.min(25,o.loosen||0)), on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
       momOn:!!o.momOn, early:o.early||3, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
     return true;
   }catch(e){ return false; }
