@@ -2330,6 +2330,156 @@ def _clean_number(value):
 
 DEEP_CARDS = {}               # 'TICKER|CCY' -> compact deep scorecard, for the web page export
 
+# ---- two-year price charts for the PowerPoint profiles ------------------------------
+# Weekly closes for every name in the deep feed, fetched from Yahoo at build time. Yahoo
+# needs its own symbol (2330.TW, not 2330), so each name is looked up once by ISIN, or by
+# ticker and name when there is no ISIN, and the answer is kept in data/yahoo_symbols.json,
+# which the workflow commits. Look-ups stop after CHART_LOOKUP_BUDGET seconds so the build
+# never runs long; whatever is left is picked up on the next run. Nothing here can fail the
+# build: a name without history simply gets no chart.
+PRICE_CHARTS = True
+CHART_LOOKUP_BUDGET = 600         # seconds of symbol look-ups per run
+CHART_CACHE_PATH = None           # set in main() to <data dir>/yahoo_symbols.json
+CHARTS = {}                       # 'TICKER|CCY' -> {'d0': first week, 'w': weekly closes, 'c': ccy}
+_YH_CCY = {   # Yahoo venue code -> currency, for picking the right listing of a company
+    'NMS': 'USD', 'NGM': 'USD', 'NCM': 'USD', 'NYQ': 'USD', 'ASE': 'USD', 'PCX': 'USD',
+    'BTS': 'USD', 'PNK': 'USD', 'OTC': 'USD', 'EBS': 'CHF', 'GER': 'EUR', 'FRA': 'EUR',
+    'PAR': 'EUR', 'AMS': 'EUR', 'BRU': 'EUR', 'MIL': 'EUR', 'MCE': 'EUR', 'LIS': 'EUR',
+    'VIE': 'EUR', 'DUB': 'EUR', 'HEL': 'EUR', 'ATH': 'EUR', 'LSE': 'GBP', 'STO': 'SEK',
+    'CPH': 'DKK', 'OSL': 'NOK', 'TOR': 'CAD', 'VAN': 'CAD', 'CNQ': 'CAD', 'JPX': 'JPY',
+    'HKG': 'HKD', 'TAI': 'TWD', 'TWO': 'TWD', 'KSC': 'KRW', 'KOE': 'KRW', 'NSI': 'INR',
+    'BSE': 'INR', 'SES': 'SGD', 'KLS': 'MYR', 'JKT': 'IDR', 'SET': 'THB', 'PHS': 'PHP',
+    'HSX': 'VND', 'SHH': 'CNY', 'SHZ': 'CNY', 'ASX': 'AUD', 'NZE': 'NZD', 'SAO': 'BRL',
+    'MEX': 'MXN', 'SGO': 'CLP', 'LIM': 'PEN', 'JNB': 'ZAR', 'TLV': 'ILS', 'IST': 'TRY',
+    'WSE': 'PLN', 'SAU': 'SAR', 'DOH': 'QAR', 'PRA': 'CZK', 'BUD': 'HUF', 'CAI': 'EGP',
+}
+
+
+def _yahoo_search(query):
+    import requests
+    try:
+        r = requests.get('https://query2.finance.yahoo.com/v1/finance/search',
+                         params={'q': query, 'quotesCount': 8, 'newsCount': 0}, timeout=10,
+                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'})
+        r.raise_for_status()
+        return [q for q in (r.json().get('quotes') or [])
+                if str(q.get('quoteType', '')).upper() in ('EQUITY', 'ETF') and q.get('symbol')]
+    except Exception:
+        return None          # a failed request, as opposed to no results
+
+
+def _pick_listing(quotes, ticker, ccy):
+    """The quote in the expected currency, preferring the same ticker; None if none fits."""
+    quotes = quotes or []
+    want = {'GBX': 'GBP', 'ZAC': 'ZAR', 'ILA': 'ILS'}.get(ccy, ccy)
+    base = lambda x: (re.sub(r'[^A-Z0-9]', '', str(x).upper().split('.')[0]).lstrip('0') or '0')
+    in_ccy = [q for q in quotes if (q.get('currency') or _YH_CCY.get(str(q.get('exchange', '')).upper())) == want]
+    same = [q for q in in_ccy if base(q['symbol']) == base(ticker)]
+    return (same or in_ccy or [None])[0]
+
+
+def yahoo_symbol(entry, cache):
+    """Yahoo symbol for one deep-feed entry, from the cache or a fresh look-up. Returns
+    (symbol or None, looked_up)."""
+    ticker = str(entry.get('ticker') or '').strip().upper()
+    ccy = str(entry.get('ccy') or '').upper()
+    isin = entry.get('isin') or ''
+    key = isin or f'TV:{ticker}:{ccy}'
+    if cache.get(key):
+        return cache[key], False
+    failed = cache.setdefault('_not_found', {})
+    if key in failed and (datetime.date.today() - datetime.date.fromisoformat(failed[key])).days < 14:
+        return None, False                       # tried recently, try again in two weeks
+    if ccy == 'USD' and re.fullmatch(r'[A-Z]{1,5}([._/][A-Z])?', ticker):
+        sym = re.sub(r'[._/]', '-', ticker)
+        cache[key] = sym
+        return sym, False
+    q, errored = None, False
+    for query in ([isin] if isin else []) + [ticker] + ([entry['name']] if entry.get('name') else []):
+        res = _yahoo_search(query)
+        errored = errored or res is None
+        q = _pick_listing(res, ticker, ccy)
+        if q:
+            break
+    if q:
+        cache[key] = q['symbol']
+        failed.pop(key, None)
+        return q['symbol'], True
+    if not errored:                              # a real "not found", not a network blip
+        failed[key] = datetime.date.today().isoformat()
+    return None, True
+
+
+def fetch_charts(stocks):
+    """Fill CHARTS with two years of weekly closes for the deep-feed names."""
+    CHARTS.clear()
+    if not PRICE_CHARTS:
+        return
+    try:
+        import yfinance as yf
+    except Exception:
+        print('      [WARN] yfinance is not installed, so the PowerPoint profiles get no price charts')
+        return
+    cache = {}
+    if CHART_CACHE_PATH and os.path.exists(CHART_CACHE_PATH):
+        try:
+            with open(CHART_CACHE_PATH) as fh:
+                cache = json.load(fh)
+        except Exception:
+            cache = {}
+    t0, looked, pending, wanted = time.time(), 0, 0, {}
+    for e in stocks.values():
+        key = f"{e.get('ticker')}|{(e.get('ccy') or '').upper()}"
+        k = e.get('isin') or f"TV:{str(e.get('ticker') or '').upper()}:{(e.get('ccy') or '').upper()}"
+        if not cache.get(k) and time.time() - t0 > CHART_LOOKUP_BUDGET:
+            pending += 1
+            continue
+        sym, fresh = yahoo_symbol(e, cache)
+        if fresh:
+            looked += 1
+            time.sleep(0.15)
+        if sym:
+            wanted.setdefault(sym, []).append(key)
+    if CHART_CACHE_PATH:
+        try:
+            with open(CHART_CACHE_PATH, 'w') as fh:
+                json.dump(cache, fh, indent=0, sort_keys=True)
+        except Exception as e:
+            print(f'      [WARN] could not save the Yahoo symbol cache: {e}')
+    syms = sorted(wanted)
+    for i in range(0, len(syms), 150):
+        chunk = syms[i:i + 150]
+        try:
+            df = yf.download(chunk, period='2y', interval='1wk', auto_adjust=True, progress=False,
+                             threads=True, group_by='ticker', multi_level_index=True)
+        except Exception as e:
+            print(f'      [WARN] price download failed for {len(chunk)} names: {e}')
+            continue
+        for sym in chunk:
+            try:
+                cols = df.columns
+                if isinstance(cols, pd.MultiIndex):
+                    if sym in cols.get_level_values(0):
+                        close = df[sym]['Close']
+                    else:
+                        close = df['Close'][sym]
+                else:
+                    close = df['Close']
+                if hasattr(close, 'columns'):
+                    close = close.iloc[:, 0]
+                close = close.dropna()
+            except Exception:
+                continue
+            if len(close) < 20:
+                continue
+            pts = [float(f'{float(v):.4g}') for v in close.values]
+            for key in wanted[sym]:
+                CHARTS[key] = {'d0': close.index[0].strftime('%Y-%m-%d'), 'w': pts}
+    print(f'      price charts -> {len(CHARTS)} of {len(stocks)} names'
+          f' ({looked} new symbol look-ups'
+          + (f', {pending} left for the next run' if pending else '') + ')')
+
 
 def load_deep_scoring():
     """The deep app's scoring module, or None."""
@@ -2472,6 +2622,10 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
         stocks[key] = entry
 
     build_deep_cards(stocks, stats)
+    try:
+        fetch_charts(stocks)
+    except Exception as e:
+        print(f'      [WARN] price charts skipped: {e}')
     feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
             'built': stamp['built'], 'source': 'TradingView screener export',
             'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
@@ -2567,6 +2721,7 @@ def build_html(a2, out_path, stamp, split=False):
         'fixedBy': fixed_rules(),
         'marketDist': MARKET_DIST,
         'deep': DEEP_CARDS,
+        'charts': CHARTS,
         'ruleSets': SECTOR_RULES,
         'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
         'notUsedWhy': not_used_why(),
@@ -3502,8 +3657,11 @@ function sectorMedians(r){
 // investment gains or a one-off, so the screen and the scorecard both read them too kindly
 function dataChecks(r){
   const out=[], g=k=>r[IX[k]];
-  const big=(k,lab)=>{ const v=g(k); if(isNum(v)&&Math.abs(v)>100) out.push(lab+' of '+v.toFixed(0)+'% is not plausible for an operating business'); };
-  big('om','Operating margin'); big('nm','Net margin'); big('fcfm','Free cash flow margin');
+  const key=r[IX.gics], used=ruleSetFor((key===null||key===undefined)? DATA.allLabel : SEC[key]);
+  // only figures the company is actually judged on: a bank's free cash flow is not used, so
+  // an odd value there does not matter
+  const big=(k,rule,lab)=>{ const v=g(k); if(used.includes(rule)&&isNum(v)&&Math.abs(v)>100) out.push(lab+' of '+v.toFixed(0)+'% is not plausible for an operating business'); };
+  big('om','op_margin_min','Operating margin'); big('nm','net_margin_min','Net margin'); big('fcfm','fcf_margin_min','Free cash flow margin');
   const pe=g('pe'); if(isNum(pe)&&pe>0&&pe<3) out.push('A P/E of '+pe.toFixed(1)+' usually means one-off or investment gains, not repeatable earnings');
   return out;
 }
@@ -3539,6 +3697,7 @@ function exportData(){
         dV:dc? dc.v : null, dM:dc? dc.m : null, dG:dc? dc.g : null, dCov:dc? dc.c : null,
         dLifts:dc? (dc.l||[]) : [], dDrags:dc? (dc.d||[]) : [], dFlags:dc? (dc.x||[]) : [],
         whyList:pr.list, closeTxt:pr.close, med:sectorMedians(r), link:deepLink(r), checks:dataChecks(r),
+        chart:(DATA.charts||{})[(r[IX.sym]||'')+'|'+String(r[IX.ccy]||'').toUpperCase()]||null,
         useKeys:ruleSetFor((r[IX.gics]===null||r[IX.gics]===undefined)? DATA.allLabel : SEC[r[IX.gics]]),
         dLift:dc? join(dc.l) : '', dDrag:join(dataChecks(r).map(x=>'Check the data: '+x).concat(dc? (dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[]) : [])) }; })()}));
   return {deepNote: 'Deep analysis scorecard from the snapshot figures: each figure scored against its sector, five weighted pillars, Buy from 70, Hold from 45. The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. Names outside the deep feed are marked Not scored.', rows, meta:{
@@ -3572,8 +3731,20 @@ async function doExport(btn,kind){
       setTimeout(()=>URL.revokeObjectURL(a.href),4000);
       status('Excel workbook saved, '+nf0.format(D.rows.length)+' companies.');
     } else {
-      await XP.deck(await loadLib('PptxGenJS'), D).writeFile({fileName:fileStem()+'.pptx'});
-      status('PowerPoint saved.');
+      status('Building '+nf0.format(D.rows.length)+' company pages...');
+      const pres=XP.deck(await loadLib('PptxGenJS'), D);
+      const raw=await pres.write({outputType:'arraybuffer'});
+      const type='application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      // the library stores its files uncompressed, which makes a large deck several times
+      // bigger than it needs to be, so the file is re-zipped before saving
+      let blob;
+      try{ const z=await window.JSZip.loadAsync(raw);
+        blob=await z.generateAsync({type:'blob', mimeType:type, compression:'DEFLATE', compressionOptions:{level:6}}); }
+      catch(e){ blob=new Blob([raw],{type}); }
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob); a.download=fileStem()+'.pptx'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+      status('PowerPoint saved, '+nf0.format(D.rows.length)+' company pages ('+(blob.size/1048576).toFixed(1)+' MB).');
     }
   } catch(e){ status(e.message||String(e), true); }
   finally{ btn.disabled=!cur.length; btn.textContent=label; }
@@ -4053,6 +4224,37 @@ const XP = (() => {
   }
 
   // ================================================================ POWERPOINT =====
+  // two years of weekly closes as an SVG line chart, returned as a data URI
+  function priceSvg(ch, color) {
+    const W = 960, H = 380, L = 70, R = 12, Tp = 14, B = 34;
+    const v = ch.w, n = v.length;
+    let lo = Math.min(...v), hi = Math.max(...v);
+    const pad = (hi - lo) * 0.06 || hi * 0.05 || 1; lo -= pad; hi += pad;
+    const X = i => L + (W - L - R) * i / (n - 1), Y = y => Tp + (H - Tp - B) * (1 - (y - lo) / (hi - lo));
+    const f = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x >= 10 ? x.toFixed(1) : x.toFixed(2);
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const d0 = new Date(ch.d0 + 'T00:00:00Z').getTime();
+    let g = '';
+    for (let k = 0; k <= 3; k++) {
+      const yv = lo + (hi - lo) * k / 3, y = Y(yv).toFixed(1);
+      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#E3E8F0" stroke-width="1.5"/>`
+        + `<text x="${L - 8}" y="${(+y + 7).toFixed(1)}" text-anchor="end" font-size="20" fill="#${NAVY}" font-family="Calibri, Arial">${f(yv)}</text>`;
+    }
+    const step = Math.max(1, Math.round((n - 1) / 6));
+    for (let i = 0; i < n; i += step) {
+      const d = new Date(d0 + i * 7 * 864e5);
+      g += `<text x="${X(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="20" fill="#${NAVY}" font-family="Calibri, Arial">${MON[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}</text>`;
+    }
+    const pts = v.map((y, i) => X(i).toFixed(1) + ',' + Y(y).toFixed(1)).join(' ');
+    const area = `${X(0).toFixed(1)},${H - B} ${pts} ${X(n - 1).toFixed(1)},${H - B}`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
+      + g + `<polygon points="${area}" fill="#${color}" fill-opacity="0.08"/>`
+      + `<polyline points="${pts}" fill="none" stroke="#${color}" stroke-width="3" stroke-linejoin="round"/>`
+      + `<circle cx="${X(n - 1).toFixed(1)}" cy="${Y(v[n - 1]).toFixed(1)}" r="5" fill="#${color}"/></svg>`;
+    const b64 = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(svg))) : Buffer.from(svg).toString('base64');
+    return 'data:image/svg+xml;base64,' + b64;
+  }
+
   function deck(PptxGenJS, D) {
     const pres = new PptxGenJS();
     pres.layout = 'LAYOUT_WIDE';            // 13.33 x 7.5 in
@@ -4268,26 +4470,29 @@ const XP = (() => {
       }
     }
 
-    // company profiles: one page each for the strongest names on the deep scorecard
-    const PROFILES = 20;
-    const prof = ranked.slice(0, PROFILES);
+    // company profiles: one page for every company in the export, by sector, strongest
+    // deep score first within each sector
+    const prof = [];
+    for (const g of groups) prof.push(...g.rows.slice().sort((a, b) =>
+      (num(b.dScore) === null ? -1 : b.dScore) - (num(a.dScore) === null ? -1 : a.dScore) || (b.mcap || 0) - (a.mcap || 0)));
     if (prof.length) {
       const sd = pres.addSlide({ masterName: 'COVER' });
       sd.addText('Company profiles', { placeholder: 'title' });
       sd.addText([
-        T(`The ${prof.length} strongest names on the deep analysis scorecard, one page each`, { breakLine: true, color: WHITE }),
-        T('Why each one passed the screen, what lifts its score, what holds it back, and how it compares with its sector median.', { fontSize: 13 }),
+        T(`One page for each of the ${prof.length.toLocaleString('en-US')} companies, by sector, strongest deep score first`, { breakLine: true, color: WHITE }),
+        T('Why each one passed the screen, what lifts its score, what holds it back, how it compares with its sector median, and two years of price.', { fontSize: 13 }),
       ], { placeholder: 'body' });
     }
     const RECT = (pres.shapes && pres.shapes.RECTANGLE) || (pres.ShapeType && pres.ShapeType.rect) || 'rect';
     const sign = v => num(v) === null ? '-' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const bullets = (list, color) => list.length
-      ? list.map((t, i) => T(String(t).replace(/\.$/, '') + '.', { bullet: { indent: 12 }, breakLine: i < list.length - 1,
-          color: color || INK, paraSpaceAfter: 4 }))
+      ? list.map((t, i) => T(String(t).replace(/\.$/, '') + '.', { bullet: { indent: 11 }, breakLine: i < list.length - 1,
+          color: color || INK, paraSpaceAfter: 3 }))
       : [T('Nothing stands out.', { color: NAVY2, italic: true })];
-    const heading = (sl, txt, x, y, w) => {
-      sl.addText(txt, { x, y, w, h: 0.3, fontFace: HEAD, fontSize: 13, color: NAVY, margin: 0, isTextBox: true });
-      sl.addShape(RECT, { x, y: y + 0.32, w: 0.6, h: 0.03, fill: { color: GOLD }, line: { color: GOLD } });
+    const heading = (sl, txt, x, y) => {
+      sl.addText(txt, { x, y, w: 4, h: 0.28, fontFace: HEAD, fontSize: 12.5, color: NAVY, margin: 0, isTextBox: true });
+      sl.addShape(RECT, { x, y: y + 0.3, w: 0.55, h: 0.03, fill: { color: GOLD }, line: { color: GOLD } });
     };
     prof.forEach(r => {
       const sl = pres.addSlide({ masterName: 'CONTENT' });
@@ -4297,48 +4502,46 @@ const XP = (() => {
       const facts = [r.sector, r.ind, r.ctry, num(r.mcap) === null ? null : 'Market cap $' + fmt.bn(r.mcap) + 'bn',
         num(r.px) === null ? null : 'Price ' + r.px.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + (r.ccy || ''),
         r.inv ? 'Held by ' + fmt.int(r.inv) + ' superinvestor' + (r.inv === 1 ? '' : 's') : null].filter(Boolean);
-      sl.addText(facts.join('   |   '), { x: X0, y: 1.3, w: CW, h: 0.28, fontFace: BODY, fontSize: 10.5,
+      sl.addText(facts.join('   |   '), { x: X0, y: 1.28, w: CW, h: 0.26, fontFace: BODY, fontSize: 10,
         color: NAVY, margin: 0, isTextBox: true });
 
-      // left: verdict and pillars
-      const xL = X0, wL = 3.55;
-      sl.addShape(RECT, { x: xL, y: 1.75, w: wL, h: 0.95, fill: { color: OPC[r.dOp] || NAVY2 }, line: { color: OPC[r.dOp] || NAVY2 } });
-      sl.addText([T(r.dOp || 'Not scored', { fontSize: 24, bold: true, color: WHITE, breakLine: true }),
-                  T(`Deep score ${fmt.int(r.dScore)} of 100`, { fontSize: 11, color: WHITE })],
-        { x: xL + 0.15, y: 1.75, w: wL - 0.3, h: 0.95, fontFace: BODY, valign: 'middle', margin: 0 });
+      // top left: verdict and pillars
+      const xL = X0, wL = 3.55, opc = OPC[r.dOp] || NAVY2;
+      sl.addShape(RECT, { x: xL, y: 1.7, w: wL, h: 0.78, fill: { color: opc }, line: { color: opc } });
+      sl.addText([T(r.dOp || 'Not scored', { fontSize: 20, bold: true, color: WHITE, breakLine: true }),
+                  T(num(r.dScore) === null ? 'Not in the deep feed' : `Deep score ${fmt.int(r.dScore)} of 100`, { fontSize: 10.5, color: WHITE })],
+        { x: xL + 0.15, y: 1.7, w: wL - 0.3, h: 0.78, fontFace: BODY, valign: 'middle', margin: 0 });
       const pill = [['Quality', r.dQ], ['Financial strength', r.dF], ['Valuation', r.dV], ['Momentum', r.dM], ['Signals', r.dG]]
         .filter(([lab, v]) => lab !== 'Signals' || num(v) !== null);
       pill.forEach(([lab, v], i) => {
-        const y = 2.9 + i * 0.4;
-        sl.addText(lab, { x: xL, y, w: 1.45, h: 0.3, fontFace: BODY, fontSize: 10, color: NAVY, margin: 0, valign: 'middle' });
-        sl.addShape(RECT, { x: xL + 1.5, y: y + 0.07, w: 1.6, h: 0.16, fill: { color: PALE }, line: { color: PALE } });
-        if (num(v) !== null) sl.addShape(RECT, { x: xL + 1.5, y: y + 0.07, w: Math.max(0.02, 1.6 * v / 100), h: 0.16,
+        const y = 2.6 + i * 0.33;
+        sl.addText(lab, { x: xL, y, w: 1.45, h: 0.27, fontFace: BODY, fontSize: 9.5, color: NAVY, margin: 0, valign: 'middle' });
+        sl.addShape(RECT, { x: xL + 1.5, y: y + 0.06, w: 1.6, h: 0.15, fill: { color: PALE }, line: { color: PALE } });
+        if (num(v) !== null) sl.addShape(RECT, { x: xL + 1.5, y: y + 0.06, w: Math.max(0.02, 1.6 * v / 100), h: 0.15,
           fill: { color: v >= 65 ? NAVY : v >= 45 ? GOLD : 'B42318' }, line: { type: 'none' } });
-        sl.addText(num(v) === null ? 'n/a' : String(Math.round(v)), { x: xL + 3.15, y, w: 0.4, h: 0.3,
-          fontFace: BODY, fontSize: 10, bold: true, color: NAVY, align: 'right', margin: 0, valign: 'middle' });
+        sl.addText(num(v) === null ? 'n/a' : String(Math.round(v)), { x: xL + 3.15, y, w: 0.4, h: 0.27,
+          fontFace: BODY, fontSize: 9.5, bold: true, color: NAVY, align: 'right', margin: 0, valign: 'middle' });
       });
-      sl.addText([T(r.passed || '', { breakLine: true }), T('Momentum stage: ' + (r.mom || 'n/a'))],
-        { x: xL, y: 4.95, w: wL, h: 0.45, fontFace: BODY, fontSize: 9.5, color: NAVY, margin: 0, valign: 'top' });
 
-      // middle: why it passed
+      // top middle: why it passed
       const xM = 4.45, wM = 4.1;
-      heading(sl, 'Why it passed the screen', xM, 1.75, wM);
-      const wl = (r.whyList || []).map(x => x.txt + ', ' + x.where);
-      sl.addText(bullets(wl), { x: xM, y: 2.2, w: wM, h: 1.55, fontFace: BODY, fontSize: 10.5, color: INK, valign: 'top', margin: 0 });
-      heading(sl, 'Closest call', xM, 3.85, wM);
-      sl.addText(r.closeTxt ? r.closeTxt + '. The figure with the least room above its bar.' : '-',
-        { x: xM, y: 4.3, w: wM, h: 1.0, fontFace: BODY, fontSize: 10.5, color: INK, valign: 'top', margin: 0 });
+      heading(sl, 'Why it passed the screen', xM, 1.7);
+      sl.addText(bullets((r.whyList || []).map(x => x.txt + ', ' + x.where)),
+        { x: xM, y: 2.1, w: wM, h: 1.05, fontFace: BODY, fontSize: 9.5, color: INK, valign: 'top', margin: 0 });
+      heading(sl, 'Closest call', xM, 3.2);
+      sl.addText((r.closeTxt ? r.closeTxt + '. The figure with the least room above its bar. ' : '') + (r.passed || ''),
+        { x: xM, y: 3.6, w: wM, h: 0.75, fontFace: BODY, fontSize: 9.5, color: INK, valign: 'top', margin: 0 });
 
-      // right: what the deep scorecard says
+      // top right: what the deep scorecard says
       const xR = 8.8, wR = 3.93;
-      heading(sl, 'Lifting the score', xR, 1.75, wR);
-      sl.addText(bullets((r.dLifts || []).slice(0, 3)), { x: xR, y: 2.2, w: wR, h: 1.55, fontFace: BODY, fontSize: 10,
+      heading(sl, 'Lifting the score', xR, 1.7);
+      sl.addText(bullets((r.dLifts || []).slice(0, 3)), { x: xR, y: 2.1, w: wR, h: 1.05, fontFace: BODY, fontSize: 9.5,
         color: INK, valign: 'top', margin: 0 });
-      heading(sl, 'Holding it back', xR, 3.85, wR);
+      heading(sl, 'Holding it back', xR, 3.2);
       const hb = (r.checks || []).map(x => 'Check the data: ' + x).concat((r.dFlags || []).map(x => 'Red flag: ' + x), r.dDrags || []).slice(0, 3);
-      sl.addText(bullets(hb), { x: xR, y: 4.3, w: wR, h: 1.0, fontFace: BODY, fontSize: 10, color: INK, valign: 'top', margin: 0 });
+      sl.addText(bullets(hb), { x: xR, y: 3.58, w: wR, h: 0.9, fontFace: BODY, fontSize: 9, color: INK, valign: 'top', margin: 0 });
 
-      // bottom: against the sector median, and recent performance
+      // bottom left: against the sector median
       const md = r.med || {};
       const mc = [['P/E', r.pe, md.pe, fmt.x], ['ROIC', r.roic, md.roic, fmt.pct], ['ROE', r.roe, md.roe, fmt.pct],
         ['Gross margin', r.gm, md.gm, fmt.pct], ['Op margin', r.om, md.om, fmt.pct], ['FCF margin', r.fcfm, md.fcfm, fmt.pct],
@@ -4346,28 +4549,44 @@ const XP = (() => {
       const KEYOF = { 'P/E': 'pe_max', ROIC: 'roic_min', ROE: 'roe_min', 'Gross margin': 'gross_margin_min',
         'Op margin': 'op_margin_min', 'FCF margin': 'fcf_margin_min', 'Debt / equity': 'de_max', 'Altman Z': 'altman_min' };
       const uk = r.useKeys || [];
-      let mcUse = mc.filter(c => uk.includes(KEYOF[c[0]]));
-      if (uk.includes('roa_min') && !uk.includes('roic_min')) mcUse.splice(2, 0, ['ROA', r.roa, md.roa, fmt.pct]);
-      if (uk.includes('net_margin_min') && !uk.includes('fcf_margin_min')) mcUse.push(['Net margin', r.nm, md.nm, fmt.pct]);
-      if (mcUse.length < 3) mcUse = mc;
-      mc.length = 0; mcUse.forEach(c => mc.push(c));
-      const cw = Math.min(1.2, 6.4 / mc.length);
+      let use = mc.filter(c => uk.includes(KEYOF[c[0]]));
+      if (uk.includes('roa_min') && !uk.includes('roic_min')) use.splice(2, 0, ['ROA', r.roa, md.roa, fmt.pct]);
+      if (uk.includes('net_margin_min') && !uk.includes('fcf_margin_min')) use.push(['Net margin', r.nm, md.nm, fmt.pct]);
+      if (use.length < 3) use = mc;
+      const cw = Math.min(1.0, 5.75 / use.length);
       const hdr = [T('Against its sector', { bold: true, color: WHITE, fill: { color: NAVY } })]
-        .concat(mc.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })));
-      const rowC = [T(r.sym, { bold: true, color: NAVY })].concat(mc.map(c => T(c[3](num(c[1])), { align: 'right', bold: true })));
-      const rowM = [T('Sector median', { color: NAVY })].concat(mc.map(c => T(c[3](num(c[2])), { align: 'right', color: NAVY })));
-      sl.addTable([hdr, rowC, zebra(rowM, 1)], tableOpts([1.4].concat(mc.map(() => cw)),
-        { x: X0, y: 5.6, fontSize: 9.5, rowH: 0.3 }));
+        .concat(use.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })));
+      const rowC = [T(r.sym, { bold: true, color: NAVY })].concat(use.map(c => T(c[3](num(c[1])), { align: 'right', bold: true })));
+      const rowM = [T('Sector median', { color: NAVY })].concat(use.map(c => T(c[3](num(c[2])), { align: 'right', color: NAVY })));
+      sl.addTable([hdr, rowC, zebra(rowM, 1)], tableOpts([1.35].concat(use.map(() => cw)),
+        { x: X0, y: 4.7, fontSize: 9, rowH: 0.3 }));
       sl.addText('Sector median among companies above $300M. For P/E, the median of the sector\'s quality peers (ROIC or ROE of 10% or more).',
-        { x: X0, y: 6.55, w: 7.8, h: 0.25, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true });
-      const pc = [['1 month', r.m1], ['3 months', r.m3], ['6 months', r.m6], ['YTD', r.ytd], ['1 year', r.y1]];
-      sl.addTable([pc.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })),
-        pc.map(c => T(sign(num(c[1])), { align: 'right', bold: true,
-          color: num(c[1]) === null ? NAVY2 : c[1] >= 0 ? '1E7B34' : 'B42318' }))],
-        tableOpts(pc.map(() => 0.78), { x: 8.83, y: 5.6, fontSize: 9.5, rowH: 0.3 }));
-      sl.addText('Price return, listing currency', { x: 8.83, y: 6.55, w: 3.9, h: 0.25, fontFace: BODY, fontSize: 8.5,
+        { x: X0, y: 5.68, w: 7.1, h: 0.4, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true, valign: 'top' });
+      const pc = [['1M', r.m1], ['3M', r.m3], ['6M', r.m6], ['YTD', r.ytd], ['1Y', r.y1]];
+      sl.addText([T('Price return   ', { bold: true, color: NAVY })].concat(pc.flatMap(([lab, v], i) => [
+          T(lab + ' ', { color: NAVY }),
+          T(sign(num(v)) + (i < pc.length - 1 ? '     ' : ''), { bold: true, color: num(v) === null ? NAVY2 : v >= 0 ? '1E7B34' : 'B42318' })])),
+        { x: X0, y: 6.2, w: 7.1, h: 0.3, fontFace: BODY, fontSize: 10, margin: 0, isTextBox: true });
+      sl.addText('Momentum stage: ' + (r.mom || 'n/a'), { x: X0, y: 6.5, w: 7.1, h: 0.25, fontFace: BODY, fontSize: 9.5,
         color: NAVY, margin: 0, isTextBox: true });
-      sl.addNotes(`Deep analysis scorecard from the snapshot figures (${num(r.dCov) === null ? '' : r.dCov + '% of expected figures available'}). `
+
+      // bottom right: two years of weekly closes
+      const xC = 7.95, wC = 4.78;
+      heading(sl, 'Two years of price', xC, 4.6);
+      const ch = r.chart;
+      if (ch && ch.w && ch.w.length >= 20) {
+        const first = ch.w[0], last = ch.w[ch.w.length - 1], chg = (last / first - 1) * 100;
+        // drawn as a small vector image rather than a native chart: a native chart embeds a
+        // spreadsheet in every slide, which made a full deck tens of megabytes
+        sl.addImage({ data: priceSvg(ch, chg >= 0 ? NAVY : 'B42318'), x: xC, y: 5.0, w: wC, h: 1.75 });
+        sl.addText(`${sign(chg)} over the period, weekly close in ${r.ccy || 'the listing currency'}`,
+          { x: xC, y: 6.78, w: wC, h: 0.2, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true });
+      } else {
+        sl.addShape(RECT, { x: xC, y: 5.0, w: wC, h: 1.7, fill: { color: BAND }, line: { color: LINE } });
+        sl.addText('Price history not available yet for this listing. It is fetched on each nightly build, so it usually appears within a run or two.',
+          { x: xC + 0.2, y: 5.0, w: wC - 0.4, h: 1.7, fontFace: BODY, fontSize: 9.5, color: NAVY, align: 'center', valign: 'middle', margin: 0 });
+      }
+      sl.addNotes(`Deep analysis scorecard from the snapshot figures${num(r.dCov) === null ? '' : ' (' + r.dCov + '% of expected figures available)'}. `
         + 'The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. '
         + (r.link ? 'Full analysis: ' + r.link : ''));
     });
@@ -4505,7 +4724,8 @@ def main():
 
     # command line beats the constants at the top, which is how the CI workflow drives
     # this script without editing the file
-    global SCRAPE_DATAROMA, PUBLISH_DIR, GITHUB_UPLOAD, DATE_IN_FILENAME
+    global SCRAPE_DATAROMA, PUBLISH_DIR, GITHUB_UPLOAD, DATE_IN_FILENAME, CHART_CACHE_PATH
+    CHART_CACHE_PATH = os.path.join(args.data_dir, 'yahoo_symbols.json')
     if args.scrape:
         SCRAPE_DATAROMA = args.scrape
     if args.publish_dir is not None:
