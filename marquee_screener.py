@@ -153,14 +153,12 @@ DATAROMA_PAGES = 15
 KEEP_ONLY_LATEST_DATAROMA = True        # the scraper stops early on its own if a page comes back empty
 
 # Which threshold set to run.
-#   'base'   every sector uses the identical DEFAULT_FILTERS values (SECTOR_OVERRIDES).
-#            This is the starting point - one rule for the whole market.
+#   'base'   every bar is the median company of its own sector, written into
+#            SECTOR_OVERRIDES. The plain 'better than a typical peer' view.
 #   'tuned'  every bar is computed from the data on each run, see [3b] SECTOR-TUNED RULES.
-#            (SECTOR_PRESETS below is the older hand-set version, kept for reference only.)
-#            Those older thresholds were calibrated against the
-#            actual marquee holdings in each sector - each bar sits near that sector's
-#            median - and ROIC and ROCE are switched off everywhere as redundant with
-#            ROE and ROA. This is what produces a workable count in every sector.
+#            Quality rules beat most of the sector, safety floors sit low or fixed, and P/E
+#            only drops the most expensive names. (SECTOR_PRESETS below is the older
+#            hand-set version, kept for reference only.)
 # Switch this one word and run again. Both sets are fully editable further down.
 THRESHOLD_MODE = 'tuned'
 
@@ -278,250 +276,257 @@ DEFAULT_FILTERS = {
 #     nothing arrives silently from somewhere else. Change a value directly, or write
 #     None to switch that filter off.
 #
-#     SECTOR_OVERRIDES  is the 'base' set. Every sector starts on exactly the same
-#                       thresholds you specified, so the screen is like-for-like across
-#                       the market. This is what runs by default.
-#     SECTOR_PRESETS    is the 'tuned' set, and the one that runs by default. Every bar is
-#                       calibrated against the marquee holdings actually in that sector,
-#                       anchored near the sector median, with the comment above each block
-#                       quoting those medians. ROIC and ROCE are off everywhere because
-#                       they correlate above 80% with ROE and ROA - running all four at
-#                       once collapses the joint pass rate without adding information.
-#                       Lines that differ from the base carry '# <- differs from the base set'.
+#     SECTOR_OVERRIDES  is the 'base' set. Every bar is the median company of its own
+#                       sector (22 October 2026 data, companies above $300M only), using
+#                       the same measures per sector as SECTOR_RULES. A company that passes
+#                       beats the typical company of its sector on every measure. These are
+#                       written numbers, so they stay put until you edit them.
+#     SECTOR_PRESETS    the older hand-set version, kept for reference only. The 'tuned'
+#                       set is computed on every run, see [3b].
 #
 #     Switch between them with THRESHOLD_MODE at the top. Edit either one freely.
 # =====================================================================================
 SECTOR_OVERRIDES = {
 
-    # ---- All Sectors -----------------------------------------------------------
-    # The whole universe in one pass, sector split ignored.
+    # ---- All Sectors ---------------------------------------------------------------
+    # medians of 18,269 companies above $300M (whole market, sector split ignored)
     'All Sectors': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 19.4  ,
+        'roe_min'           : 8.4   ,
+        'roic_min'          : 5.9   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 28.7  ,
+        'op_margin_min'     : 10.2  ,
+        'net_margin_min'    : 7.5   ,
+        'fcf_margin_min'    : 6.7   ,
+        'altman_min'        : 3.03  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.65  ,
+        'de_max'            : 0.46  ,
+        'int_cov_min'       : 5.3   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Information Technology ------------------------------------------------
+    # ---- Information Technology ----------------------------------------------------
+    # medians of 2,783 companies above $300M
     'Information Technology': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 35.9  ,
+        'roe_min'           : 7.4   ,
+        'roic_min'          : 6.1   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 30.3  ,
+        'op_margin_min'     : 6.8   ,
+        'net_margin_min'    : 6.3   ,
+        'fcf_margin_min'    : 5.2   ,
+        'altman_min'        : 4.89  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.98  ,
+        'de_max'            : 0.24  ,
+        'int_cov_min'       : 6.8   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Communication Services ------------------------------------------------
+    # ---- Communication Services ----------------------------------------------------
+    # medians of 192 companies above $300M
     'Communication Services': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 15.7  ,
+        'roe_min'           : 11.7  ,
+        'roic_min'          : 6.4   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 31.1  ,
+        'op_margin_min'     : 15.3  ,
+        'net_margin_min'    : 10.0  ,
+        'fcf_margin_min'    : 13.1  ,
+        'altman_min'        : 1.68  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 0.91  ,
+        'de_max'            : 0.91  ,
+        'int_cov_min'       : 3.1   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Consumer Discretionary ------------------------------------------------
+    # ---- Consumer Discretionary ----------------------------------------------------
+    # medians of 1,772 companies above $300M
     'Consumer Discretionary': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 18.1  ,
+        'roe_min'           : 8.8   ,
+        'roic_min'          : 6.1   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 27.7  ,
+        'op_margin_min'     : 7.1   ,
+        'net_margin_min'    : 4.6   ,
+        'fcf_margin_min'    : 6.2   ,
+        'altman_min'        : 2.69  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.38  ,
+        'de_max'            : 0.63  ,
+        'int_cov_min'       : 5.2   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Consumer Staples ------------------------------------------------------
+    # ---- Consumer Staples ----------------------------------------------------------
+    # medians of 1,219 companies above $300M
     'Consumer Staples': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 18.8  ,
+        'roe_min'           : 10.1  ,
+        'roic_min'          : 7.9   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 28.2  ,
+        'op_margin_min'     : 7.9   ,
+        'net_margin_min'    : 5.6   ,
+        'fcf_margin_min'    : 6.1   ,
+        'altman_min'        : 3.39  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.70  ,
+        'de_max'            : 0.43  ,
+        'int_cov_min'       : 8.0   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Health Care -----------------------------------------------------------
+    # ---- Health Care ---------------------------------------------------------------
+    # medians of 1,476 companies above $300M
     'Health Care': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 27.2  ,
+        'roe_min'           : 4.7   ,
+        'roic_min'          : 3.6   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 49.1  ,
+        'op_margin_min'     : 9.9   ,
+        'net_margin_min'    : 6.8   ,
+        'fcf_margin_min'    : 7.6   ,
+        'altman_min'        : 4.43  ,
+        'piotroski_min'     : 5     ,
+        'current_ratio_min' : 2.84  ,
+        'de_max'            : 0.22  ,
+        'int_cov_min'       : 5.1   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Financials ------------------------------------------------------------
+    # ---- Financials ----------------------------------------------------------------
+    # medians of 2,095 companies above $300M
     'Financials': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 12.1  ,
+        'roe_min'           : 11.8  ,
+        'roic_min'          : None  ,
+        'roce_min'          : None  ,
+        'roa_min'           : 1.4   ,
+        'gross_margin_min'  : None  ,
+        'op_margin_min'     : None  ,
+        'net_margin_min'    : 23.2  ,
+        'fcf_margin_min'    : None  ,
+        'altman_min'        : None  ,
+        'piotroski_min'     : 5     ,
+        'current_ratio_min' : None  ,
+        'de_max'            : None  ,
+        'int_cov_min'       : None  ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Energy ----------------------------------------------------------------
+    # ---- Energy --------------------------------------------------------------------
+    # medians of 349 companies above $300M
     'Energy': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 13.5  ,
+        'roe_min'           : 10.3  ,
+        'roic_min'          : 6.9   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 24.4  ,
+        'op_margin_min'     : 15.3  ,
+        'net_margin_min'    : 7.9   ,
+        'fcf_margin_min'    : 7.1   ,
+        'altman_min'        : 1.92  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.22  ,
+        'de_max'            : 0.49  ,
+        'int_cov_min'       : 5.7   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Materials -------------------------------------------------------------
+    # ---- Materials -----------------------------------------------------------------
+    # medians of 2,347 companies above $300M
     'Materials': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 20.0  ,
+        'roe_min'           : 6.6   ,
+        'roic_min'          : 5.2   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 21.4  ,
+        'op_margin_min'     : 8.1   ,
+        'net_margin_min'    : 5.7   ,
+        'fcf_margin_min'    : 3.8   ,
+        'altman_min'        : 3.17  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.78  ,
+        'de_max'            : 0.43  ,
+        'int_cov_min'       : 5.7   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Industrials -----------------------------------------------------------
+    # ---- Industrials ---------------------------------------------------------------
+    # medians of 3,974 companies above $300M
     'Industrials': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 22.8  ,
+        'roe_min'           : 8.5   ,
+        'roic_min'          : 6.4   ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : 22.2  ,
+        'op_margin_min'     : 7.9   ,
+        'net_margin_min'    : 6.1   ,
+        'fcf_margin_min'    : 4.9   ,
+        'altman_min'        : 3.07  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : 1.65  ,
+        'de_max'            : 0.43  ,
+        'int_cov_min'       : 6.4   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Utilities -------------------------------------------------------------
+    # ---- Utilities -----------------------------------------------------------------
+    # medians of 567 companies above $300M
     'Utilities': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 16.8  ,
+        'roe_min'           : 9.0   ,
+        'roic_min'          : None  ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : None  ,
+        'op_margin_min'     : 16.6  ,
+        'net_margin_min'    : None  ,
+        'fcf_margin_min'    : None  ,
+        'altman_min'        : None  ,
+        'piotroski_min'     : 6     ,
+        'current_ratio_min' : None  ,
+        'de_max'            : 1.15  ,
+        'int_cov_min'       : 2.8   ,
+        'mcap_min'          : 300e6 ,
     },
 
-    # ---- Real Estate -----------------------------------------------------------
+    # ---- Real Estate ---------------------------------------------------------------
+    # medians of 1,024 companies above $300M
     'Real Estate': {
-        'pe_max'            : 20    ,
-        'roe_min'           : 10    ,
-        'roic_min'          : 10    ,
-        'roce_min'          : 10    ,
-        'roa_min'           : 10    ,
-        'gross_margin_min'  : 10    ,
-        'op_margin_min'     : 10    ,
-        'net_margin_min'    : 10    ,
-        'fcf_margin_min'    : 10    ,
-        'altman_min'        : 2.99  ,
-        'piotroski_min'     : 7     ,
-        'current_ratio_min' : 1     ,
-        'de_max'            : 2     ,
-        'int_cov_min'       : 3     ,
-        'mcap_min'          : None  ,
+        'pe_max'            : 14.5  ,
+        'roe_min'           : 6.7   ,
+        'roic_min'          : None  ,
+        'roce_min'          : None  ,
+        'roa_min'           : None  ,
+        'gross_margin_min'  : None  ,
+        'op_margin_min'     : 34.2  ,
+        'net_margin_min'    : None  ,
+        'fcf_margin_min'    : None  ,
+        'altman_min'        : None  ,
+        'piotroski_min'     : 5     ,
+        'current_ratio_min' : None  ,
+        'de_max'            : 0.85  ,
+        'int_cov_min'       : 2.5   ,
+        'mcap_min'          : 300e6 ,
     },
-
 }
 
 
@@ -788,22 +793,58 @@ SECTOR_PRESETS = {
 # [3b] SECTOR-TUNED RULES  ---  what 'tuned' means now
 # =====================================================================================
 # Every sector is judged only on the measures that describe that kind of business, and
-# every bar is set from the data on each run instead of by hand: a company has to beat the
-# median company of its own sector (TUNED_PERCENTILE = 50) on each measure that applies.
-# Raise it to be stricter, lower it to be looser. The slider on the web page moves the same
-# percentile, so tightening and loosening act evenly across every rule.
+# every percentile bar is set from the data on each run instead of by hand.
 #
-# Why these measures:
-#   ROIC is the cleanest test of business quality because borrowing cannot inflate it, so
-#   it replaces ROE and ROA for ordinary companies. Banks and insurers are judged on ROE and
-#   ROA instead, because for them debt is the raw material. Operating and free cash flow
-#   margin say what net margin says and more, so net margin is kept only for financials.
-#   Altman Z, current ratio and gross margin do not fit banks, REITs or utilities.
-TUNED_PERCENTILE = 50
+# The rules do two different jobs, so they are not held to the same strictness:
+#   Quality rules   ROIC, ROE, gross, operating and FCF margin. These decide what counts as a
+#                   good business, so a company has to beat most of its own sector (50th to
+#                   60th percentile). ROIC and ROE also have an absolute floor of 10%, so a
+#                   sector where the typical company earns too little does not get an easy bar.
+#   Safety floors   Debt, interest cover, current ratio, net margin, Altman Z. These only
+#                   remove weak balance sheets, so they sit low (20th to 25th percentile) or
+#                   at a fixed textbook number.
+#   Valuation       P/E only drops the most expensive 30% of a sector, and never allows more
+#                   than 45x. Quality usually costs a premium, so a median P/E cap would throw
+#                   the best businesses out.
+#
+# Percentiles are taken among companies above MCAP_FLOOR only, since those are the only
+# ones that can pass. Small caps used to drag every median down.
+#
+# RULE_TARGETS: key -> (percentile, limit)
+#   percentile  the share of the sector a company has to beat. None = use the limit as a
+#               fixed bar.
+#   limit       for '_min' rules the bar is never below it, for '_max' rules never above it.
+#               None = no limit.
 MCAP_FLOOR = 300e6           # US dollars. A fixed liquidity floor, never moved by the slider.
 
-_CORE = ['pe_max', 'roic_min', 'op_margin_min', 'fcf_margin_min', 'de_max', 'int_cov_min',
-         'altman_min', 'piotroski_min', 'mcap_min']
+RULE_TARGETS = {
+    # quality
+    'roic_min'          : (60, 10),
+    'roe_min'           : (50, 10),
+    'gross_margin_min'  : (50, None),
+    'op_margin_min'     : (60, None),
+    'fcf_margin_min'    : (50, 0),
+    'roa_min'           : (50, 1.0),
+    # safety floors
+    'net_margin_min'    : (None, 0),       # profitable after interest and tax
+    'de_max'            : (25, None),      # drops the most indebted quarter of the sector
+    'int_cov_min'       : (None, 3),
+    'current_ratio_min' : (20, None),
+    'altman_min'        : (None, 1.81),    # out of the distress zone
+    'piotroski_min'     : (None, 6),
+    # valuation
+    'pe_max'            : (30, 45),
+}
+# Per sector replacements for RULE_TARGETS.
+SECTOR_TARGETS = {
+    'Financials'  : {'roe_min': (60, 10), 'net_margin_min': (50, None)},
+    'Real Estate' : {'int_cov_min': (None, 2)},
+    'Utilities'   : {'int_cov_min': (None, 2)},
+}
+
+_CORE = ['pe_max', 'roic_min', 'roe_min', 'gross_margin_min', 'op_margin_min', 'fcf_margin_min',
+         'net_margin_min', 'de_max', 'int_cov_min', 'current_ratio_min', 'altman_min',
+         'piotroski_min', 'mcap_min']
 SECTOR_RULES = {
     'All Sectors'            : _CORE,
     'Information Technology' : _CORE,
@@ -818,27 +859,27 @@ SECTOR_RULES = {
                                 'piotroski_min', 'mcap_min'],
     'Real Estate'            : ['pe_max', 'roe_min', 'op_margin_min', 'de_max', 'int_cov_min',
                                 'piotroski_min', 'mcap_min'],
-    'Utilities'              : ['pe_max', 'roe_min', 'op_margin_min', 'int_cov_min',
+    'Utilities'              : ['pe_max', 'roe_min', 'op_margin_min', 'de_max', 'int_cov_min',
                                 'piotroski_min', 'mcap_min'],
 }
 # Per rule shifts of the percentile, in points. Earnings in energy, materials and property
 # swing with the cycle, so a low P/E at the top of the cycle misleads: their P/E bar sits
-# 15 points looser than the rest.
+# 10 points looser than the rest (still never above the 45x limit).
 RULE_TARGET_SHIFT = {
-    ('Energy', 'pe_max'): -15, ('Materials', 'pe_max'): -15, ('Real Estate', 'pe_max'): -15,
+    ('Energy', 'pe_max'): -10, ('Materials', 'pe_max'): -10, ('Real Estate', 'pe_max'): -10,
 }
 # Shown on the web page when a rule is not used for a sector, so the choice is visible.
 RULE_NOT_USED_WHY = {
-    'roe_min'          : 'ROIC is used instead; borrowing can inflate ROE',
+    'roe_min'          : 'not used here',
     'roa_min'          : 'used only for banks and insurers',
     'roce_min'         : 'ROIC is used instead; the two say the same thing',
     'roic_min'         : 'not meaningful for lenders, landlords and regulated utilities',
-    'gross_margin_min' : 'operating and free cash flow margin say more',
-    'net_margin_min'   : 'operating and free cash flow margin say more',
+    'gross_margin_min' : 'not meaningful for lenders, landlords and regulated utilities',
+    'net_margin_min'   : 'depreciation makes it noisy for landlords and utilities',
     'op_margin_min'    : 'a bank has no operating margin in the usual sense',
     'fcf_margin_min'   : 'capital spending or lending makes it meaningless here',
-    'current_ratio_min': 'interest cover and debt tell the story better',
-    'de_max'           : 'debt is the raw material of a bank, and normal for a utility',
+    'current_ratio_min': 'not meaningful for lenders, landlords and regulated utilities',
+    'de_max'           : 'debt is the raw material of a bank',
     'int_cov_min'      : 'a bank\'s interest is its cost of goods',
     'altman_min'       : 'the model was not built for this kind of balance sheet',
     'pe_max'           : '',
@@ -860,12 +901,22 @@ def _measure(df, key):
     return s
 
 
+def rule_target(sector, key):
+    """(percentile, limit) for one rule in one sector, after sector replacements and shifts."""
+    t, lim = SECTOR_TARGETS.get(sector, {}).get(key, RULE_TARGETS.get(key, (50, None)))
+    if t is not None:
+        t += RULE_TARGET_SHIFT.get((sector, key), 0)
+    return t, lim
+
+
 def compute_tuned(universe):
-    """Set every tuned bar from the data: the TUNED_PERCENTILE of each sector."""
+    """Set every tuned bar from the data, rule by rule, see RULE_TARGETS."""
     COMPUTED_TUNED.clear()
     DISTRIBUTIONS.clear()
+    mcap = pd.to_numeric(universe[FILTER_SPECS['mcap_min'][0]], errors='coerce')
+    investable = universe[mcap >= MCAP_FLOOR]
     for sector in [ALL_LABEL] + list(SECTOR_MAP):
-        sub = universe if sector == ALL_LABEL else universe[universe['GICS Sector'] == sector]
+        sub = investable if sector == ALL_LABEL else investable[investable['GICS Sector'] == sector]
         dist, block = {}, {}
         for key in DEFAULT_FILTERS:
             s = _measure(sub, key)
@@ -877,18 +928,29 @@ def compute_tuned(universe):
             if key == 'mcap_min':
                 block[key] = MCAP_FLOOR
                 continue
-            if len(s) < 20:
-                block[key] = None
+            t, lim = rule_target(sector, key)
+            if t is None:
+                block[key] = lim
                 continue
-            t = TUNED_PERCENTILE + RULE_TARGET_SHIFT.get((sector, key), 0)
+            if len(s) < 20:
+                block[key] = lim
+                continue
             q = (1 - t / 100) if FILTER_SPECS[key][1] == 'max' else t / 100
             v = float(s.quantile(min(max(q, 0.0), 1.0)))
+            if lim is not None:
+                v = max(v, lim) if FILTER_SPECS[key][1] == 'min' else min(v, lim)
             if key == 'piotroski_min':
                 v = float(math.ceil(v))
             block[key] = round(v, 4)
         block.update(TUNED_OVERRIDES.get(sector, {}))
         COMPUTED_TUNED[sector] = block
         DISTRIBUTIONS[sector] = dist
+
+
+def fixed_rules():
+    """Per sector, the rules held at a fixed number, which the strictness slider leaves alone."""
+    return {g: [k for k in SECTOR_RULES.get(g, _CORE) if k != 'mcap_min' and rule_target(g, k)[0] is None]
+            for g in [ALL_LABEL] + list(SECTOR_MAP)}
 
 
 # =====================================================================================
@@ -1811,11 +1873,11 @@ def sheet_readme(wb, n_matched, n_unid, n_all, screen_counts, stamp):
         ('The sector screens', [
             ('GICS mapping', 'TradingView sectors are folded into the eleven GICS sectors. Real Estate has no TradingView sector, so REITs are pulled out of Finance and other sectors by industry name.'),
             ('Unmapped names', 'About 800 companies sit in the TradingView "Miscellaneous" or "Government" sectors, which map to no GICS sector. They appear on All Stocks and can pass the All Sectors screen, but they reach no individual sector sheet. That is why the sector sheets do not sum to the All Sectors count.'),
-            ('Two threshold sets', "THRESHOLD_MODE selects one. 'base' gives every sector the identical default thresholds, which is the like-for-like view and what runs unless changed. 'tuned' switches to a set where a few sectors are relaxed because they structurally cannot clear the base rule - banks on ROA, utilities on debt to equity."),
+            ('Two threshold sets', "THRESHOLD_MODE selects one. 'base' sets every bar at the median company of its own sector, so a pass means better than a typical peer on every measure. 'tuned', the default, judges each sector only on the measures that fit its business: quality rules (ROIC, ROE, margins) have to beat most of the sector, safety floors (debt, interest cover, Altman Z) only remove weak balance sheets, and P/E only drops the most expensive 30% of the sector."),
             ('Active set this run', f"THRESHOLD_MODE = '{THRESHOLD_MODE}'. See the Screen Settings sheet for the exact numbers applied to each sector."),
             ('Blank policy', f'BLANK_FAILS is currently {BLANK_FAILS}. ' + ('Missing values are ignored, so a stock is judged only on the metrics it reports.' if not BLANK_FAILS else 'Any stock missing a screened metric is rejected, which is strict given Altman covers about three quarters of the universe.') + f' A stock must also report at least {int(MIN_DATA_COVERAGE*100)}% of the screened metrics to qualify, so thinly covered names cannot pass by default.'),
             ('Passing counts this run', passes),
-            ('To change a threshold', "Open marquee_screener.py and edit SECTOR_OVERRIDES (base), or for the tuned set change TUNED_PERCENTILE, SECTOR_RULES or TUNED_OVERRIDES, then run the script again. Sector_Screener.html lets you test values live and copy a ready-made block."),
+            ('To change a threshold', "Open marquee_screener.py and edit SECTOR_OVERRIDES (base), or for the tuned set change RULE_TARGETS, SECTOR_TARGETS, SECTOR_RULES or TUNED_OVERRIDES, then run the script again. Sector_Screener.html lets you test values live and copy a ready-made block."),
         ]),
         ('Reading the numbers', [
             ('Ratios are currency neutral', 'P/E, returns, margins and coverage compare directly across rows regardless of listing currency.'),
@@ -1973,8 +2035,8 @@ def sheet_screen_settings(wb, screen_counts, stamp):
     ws.sheet_view.showGridLines = False
     ws['A1'] = f"Active screening thresholds by GICS sector   |   updated as of {stamp['data']}"
     ws['A1'].font = Font(name='Arial', size=13, bold=True, color=NAVY)
-    src = (f'the data: each bar is the {TUNED_PERCENTILE}th percentile of its sector (sector-tuned set)') if THRESHOLD_MODE == 'tuned' else \
-          'SECTOR_OVERRIDES (base set, every sector identical)'
+    src = ('the data: quality rules beat most of the sector, safety floors sit low or fixed, see RULE_TARGETS (sector-tuned set)') if THRESHOLD_MODE == 'tuned' else \
+          'SECTOR_OVERRIDES (base set, each bar the median of its sector)'
     ws['A2'] = (f'THRESHOLD_MODE = {THRESHOLD_MODE!r}, so these come from {src}. Edit that block in '
                 'marquee_screener.py and run again. "off" means the filter is not applied, and '
                 'values in gold differ from DEFAULT_FILTERS.')
@@ -2035,7 +2097,7 @@ def sheet_sector_screen(wb, gics, passed, rule_text, universe_label, stamp):
     blk = 'TUNED_OVERRIDES' if THRESHOLD_MODE == 'tuned' else 'SECTOR_OVERRIDES'
     ws['A3'] = (f"{len(passed)} names cleared these filters (THRESHOLD_MODE = '{THRESHOLD_MODE}'). "
                 f"To change a threshold, edit {blk}['{gics}'] in marquee_screener.py and run again. "
-                f"To relax every sector at once, set THRESHOLD_MODE = 'tuned'.")
+                f"Switch THRESHOLD_MODE between 'base' (sector medians) and 'tuned' to compare.")
     ws['A3'].font = Font(name='Arial', size=9, italic=True, color='9C6500')
 
     groups = [('Identification', NAVY, [
@@ -2371,7 +2433,8 @@ def build_html(a2, out_path, stamp, split=False):
         'base': SECTOR_OVERRIDES,
         'tuned': COMPUTED_TUNED,
         'dist': DISTRIBUTIONS,
-        'tunedPct': TUNED_PERCENTILE,
+        'tunedPct': 50,
+        'fixedBy': fixed_rules(),
         'ruleSets': SECTOR_RULES,
         'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
         'notUsedWhy': RULE_NOT_USED_WHY,
@@ -2642,7 +2705,7 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
    <div class="lab" style="margin-top:0">Threshold set</div>
    <div class="seg" role="radiogroup" aria-label="Threshold set">
     <label><input type="radio" name="preset" value="tuned"><span>Sector-tuned</span></label>
-    <label><input type="radio" name="preset" value="base"><span>Same for all</span></label>
+    <label><input type="radio" name="preset" value="base"><span>Sector medians</span></label>
    </div>
    <p class="hint" id="preset-hint"></p>
    <div class="sep"></div>
@@ -2663,6 +2726,13 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
   <div class="bd">
    <label class="tick"><input class="box" type="checkbox" id="mom-on"><span class="t">Filter by momentum stage</span></label>
    <div id="mom-stages"></div>
+   <div class="lab">How early</div>
+   <div class="slider">
+    <div class="top-l"><span class="hint" style="margin:0" id="e-sub">Sets how far a stock may have run</span><output id="e-out" for="e-rng">Balanced</output></div>
+    <input type="range" id="e-rng" min="1" max="5" step="1" value="3" list="e-ticks" aria-label="How early">
+    <datalist id="e-ticks"><option value="1"></option><option value="3"></option><option value="5"></option></datalist>
+    <div class="ends"><span>Very early</span><span>Already moving</span></div>
+   </div>
    <div class="lab">An early stage needs</div>
    <div id="mom-sigs"></div>
    <p class="hint" id="mom-hint"></p>
@@ -2732,7 +2802,7 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
 let DATA, F, ROWS, SEC; const IX = {};
 const OTHER = -1;                       // rows whose TradingView sector maps to no GICS sector
 const $ = id => document.getElementById(id);
-const STORE = 'mics-screener-v3';
+const STORE = 'mics-screener-v4';
 
 // How each criterion is shown. 'short' is used in exports, 'name' in the sidebar.
 const CRIT = {
@@ -2756,7 +2826,7 @@ const GROUPS = ['Valuation','Returns','Margins','Balance sheet','Quality scores'
 
 const S = { sel:new Set(), us:true, non:true, mq:false, q:'', preset:'tuned', per:true, strict:false,
             loosen:0, on:{}, val:{}, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
-            momOn:false, stages:new Set(['early']), sigs:new Set(['trend','fresh','rsi','accel','room','vol']) };
+            momOn:false, early:3, stages:new Set(['early']), sigs:new Set(['trend','fresh','rsi','accel','room','vol']) };
 let cur = [], lastRuleKey = null;
 
 function boot(d){
@@ -2799,7 +2869,7 @@ function pctOf(v,d){
 function valAt(p,d){ p=Math.max(0,Math.min(100,p)); const x=p/5, i=Math.min(19,Math.floor(x)); return d[i]+(d[i+1]-d[i])*(x-i); }
 function adj(v,key,g){
   if(!isNum(v)) return null;
-  if(!S.loosen || (DATA.fixed||{})[key]!==undefined) return v;
+  if(!S.loosen || (DATA.fixed||{})[key]!==undefined || ((DATA.fixedBy||{})[g]||[]).includes(key)) return v;
   const d=distOf(g,key); if(!d) return v;
   const f=DATA.filters.find(x=>x.key===key);
   const p=pctOf(v,d), p2=f.dir==='min'? p-S.loosen : p+S.loosen;
@@ -2954,8 +3024,8 @@ function openMatrix(){
   }
   $('mx-t').innerHTML=html+'</tbody>';
   $('mx-sub').textContent = (S.preset==='tuned'
-    ? 'Each bar starts at the '+ordinal(DATA.tunedPct)+' percentile of its own sector, computed from today\'s data'
-    : 'One set of bars, the same for every sector')
+    ? 'Quality rules have to beat most of the sector, safety floors sit low or at a fixed number, and P/E only drops the most expensive names. Computed from today\'s data'
+    : 'Every bar is the median company of its own sector')
     + (S.loosen? ', moved '+Math.abs(S.loosen)+' percentile points '+(S.loosen>0?'looser':'stricter')+' by the strictness slider' : '')
     + '. Hover over "not used" to see why a rule does not apply.';
   $('mx').showModal();
@@ -2964,13 +3034,25 @@ function ordinal(n){ const s=['th','st','nd','rd'], v=n%100; return n+(s[(v-20)%
 
 // ---------------------------------------------------------------- momentum
 // Computed from the TradingView snapshot, so it describes where the trend stands today.
+// The "How early" slider. Level 3 is the original test. Lower levels want a stock that has
+// run less: closer to its averages, cooler RSI, further below its high. Higher levels accept
+// a move that is already under way.
+const EARLY_LEVELS = [
+  {name:'Very early',     fresh:0.05, rsiLo:45, rsiHi:60, roomLo:0.10, roomHi:0.35, e50Lo:0.95, e50Hi:1.05},
+  {name:'Early',          fresh:0.10, rsiLo:48, rsiHi:65, roomLo:0.08, roomHi:0.30, e50Lo:0.96, e50Hi:1.08},
+  {name:'Balanced',       fresh:0.15, rsiLo:50, rsiHi:70, roomLo:0.05, roomHi:0.25, e50Lo:0.97, e50Hi:1.10},
+  {name:'Relaxed',        fresh:0.20, rsiLo:50, rsiHi:73, roomLo:0.03, roomHi:0.25, e50Lo:0.97, e50Hi:1.15},
+  {name:'Already moving', fresh:0.25, rsiLo:50, rsiHi:75, roomLo:0.00, roomHi:0.25, e50Lo:0.97, e50Hi:1.20},
+];
+const EL = () => EARLY_LEVELS[Math.min(5,Math.max(1,S.early||3))-1];
+const pc = x => Math.round(x*100)+'%';
 const SIGS = [
-  {k:'trend', name:'Trend turning up', need:['e50','e200','px'], hint:'Price above its 50 day average, and the 50 day close to or just above the 200 day'},
-  {k:'fresh', name:'Not yet stretched', need:['e50','px'], hint:'Price no more than 15% above its 50 day average'},
-  {k:'rsi',   name:'RSI between 50 and 70', need:['rsi'], hint:'Strength without being overbought'},
-  {k:'accel', name:'Gaining pace', need:['m6','y1'], hint:'Recent return ahead of the longer pace (3 months against 6, or 6 against 12)'},
-  {k:'room',  name:'Room below its 52 week high', need:['h52','px'], hint:'5% to 25% below the 52 week high'},
-  {k:'vol',   name:'Volume confirms', need:['rv'], hint:'Relative volume at least 1.2 times normal'},
+  {k:'trend', name:'Trend turning up', need:['e50','e200','px'], hint:L=>'Price above its 50 day average, and the 50 day between '+pc(L.e50Lo-1)+' and +'+pc(L.e50Hi-1)+' of the 200 day'},
+  {k:'fresh', name:'Not yet stretched', need:['e50','px'], hint:L=>'Price no more than '+pc(L.fresh)+' above its 50 day average'},
+  {k:'rsi',   name:'RSI in range', need:['rsi'], hint:L=>'RSI between '+L.rsiLo+' and '+L.rsiHi+': strength without being overbought'},
+  {k:'accel', name:'Gaining pace', need:['m6','y1'], hint:L=>'Recent return ahead of the longer pace (3 months against 6, or 6 against 12)'},
+  {k:'room',  name:'Room below its 52 week high', need:['h52','px'], hint:L=>pc(L.roomLo)+' to '+pc(L.roomHi)+' below the 52 week high'},
+  {k:'vol',   name:'Volume confirms', need:['rv'], hint:L=>'Relative volume at least 1.2 times normal'},
 ];
 const STAGES = [
   {k:'early', name:'Early: just turning up'}, {k:'established', name:'Established uptrend'},
@@ -2981,12 +3063,12 @@ let SIG_AVAIL = {};
 function momSignals(r){
   const g=k=>r[IX[k]], px=g('px'), e50=g('e50'), e200=g('e200'), rsi=g('rsi');
   const m3=IX.m3!==undefined? g('m3') : null, m6=g('m6'), y1=g('y1'), h52=IX.h52!==undefined? g('h52'):null, rv=IX.rv!==undefined? g('rv'):null;
-  const s={};
-  s.trend = isNum(px)&&isNum(e50)&&isNum(e200)? (px>e50 && e50>=0.97*e200 && e50<=1.10*e200) : null;
-  s.fresh = isNum(px)&&isNum(e50)? px<=e50*1.15 : null;
-  s.rsi = isNum(rsi)? (rsi>=50 && rsi<=70) : null;
+  const s={}, L=EL();
+  s.trend = isNum(px)&&isNum(e50)&&isNum(e200)? (px>e50 && e50>=L.e50Lo*e200 && e50<=L.e50Hi*e200) : null;
+  s.fresh = isNum(px)&&isNum(e50)? px<=e50*(1+L.fresh) : null;
+  s.rsi = isNum(rsi)? (rsi>=L.rsiLo && rsi<=L.rsiHi) : null;
   s.accel = isNum(m3)&&isNum(m6)? (m3>0 && m3>m6/2) : (isNum(m6)&&isNum(y1)? (m6>0 && m6>y1/2) : null);
-  s.room = isNum(h52)&&isNum(px)&&h52>0? (px/h52-1<=-0.05 && px/h52-1>=-0.25) : null;
+  s.room = isNum(h52)&&isNum(px)&&h52>0? (px/h52-1<=-L.roomLo && px/h52-1>=-L.roomHi) : null;
   s.vol = isNum(rv)? rv>=1.2 : null;
   return s;
 }
@@ -2996,7 +3078,7 @@ function momStage(r){
   const sg=r._sig||(r._sig=momSignals(r));
   const need=[...S.sigs].filter(k=>SIG_AVAIL[k]);
   if(need.length && need.every(k=>sg[k]===true)) return 'early';
-  if(px>e50*1.25 || (isNum(rsi)&&rsi>75&&px>e50)) return 'extended';
+  if(px>e50*(1.10+EL().fresh) || (isNum(rsi)&&rsi>75&&px>e50)) return 'extended';
   if(px<e50 && e50<e200) return 'weak';
   if(px>e50 && e50>e200*1.10) return 'established';
   return 'neutral';
@@ -3011,7 +3093,7 @@ const MOM_LABEL={early:'Early',established:'Established',extended:'Extended',neu
 function buildMomentum(){
   const has=k=>IX[k]!==undefined && ROWS.some(r=>isNum(r[IX[k]]));
   SIG_AVAIL={}; for(const sg of SIGS) SIG_AVAIL[sg.k]=sg.need.every(has);
-  $('mom-sigs').innerHTML=SIGS.map(sg=>'<label class="tick'+(SIG_AVAIL[sg.k]?'':' dis sig-na')+'" title="'+esc(sg.hint)+'"><input class="box" type="checkbox" data-s="'+sg.k+'"'+(SIG_AVAIL[sg.k]?'':' disabled')+'><span class="t">'+esc(sg.name)+'</span>'+(SIG_AVAIL[sg.k]?'':'<span class="c">needs data</span>')+'</label>').join('');
+  $('mom-sigs').innerHTML=SIGS.map(sg=>'<label class="tick'+(SIG_AVAIL[sg.k]?'':' dis sig-na')+'" data-h="'+sg.k+'" title="'+esc(sg.hint(EL()))+'"><input class="box" type="checkbox" data-s="'+sg.k+'"'+(SIG_AVAIL[sg.k]?'':' disabled')+'><span class="t">'+esc(sg.name)+'</span>'+(SIG_AVAIL[sg.k]?'':'<span class="c">needs data</span>')+'</label>').join('');
   $('mom-stages').innerHTML=STAGES.map(st=>'<label class="tick"><input class="box" type="checkbox" data-st="'+st.k+'"><span class="t">'+esc(st.name)+'</span><span class="c num" data-ct="'+st.k+'"></span></label>').join('');
   $('mom-sigs').querySelectorAll('input').forEach(i=>i.onchange=e=>{ e.target.checked? S.sigs.add(e.target.dataset.s) : S.sigs.delete(e.target.dataset.s); changed(); });
   $('mom-stages').querySelectorAll('input').forEach(i=>i.onchange=e=>{ e.target.checked? S.stages.add(e.target.dataset.st) : S.stages.delete(e.target.dataset.st); if(!S.momOn){ S.momOn=true; $('mom-on').checked=true; } changed(); });
@@ -3021,10 +3103,13 @@ function buildMomentum(){
 }
 function syncMomentum(counts){
   $('mom-on').checked=S.momOn;
+  const L=EL(); $('e-rng').value=S.early; $('e-out').textContent=L.name;
+  $('e-sub').textContent='Up to '+pc(L.fresh)+' above the 50 day, RSI '+L.rsiLo+' to '+L.rsiHi;
+  $('mom-sigs').querySelectorAll('[data-h]').forEach(l=>{ const sg=SIGS.find(x=>x.k===l.dataset.h); if(sg) l.title=sg.hint(L); });
   $('mom-stages').querySelectorAll('input').forEach(i=>i.checked=S.stages.has(i.dataset.st));
   $('mom-sigs').querySelectorAll('input').forEach(i=>i.checked=S.sigs.has(i.dataset.s)&&!i.disabled);
   $('mom-stages').querySelectorAll('[data-ct]').forEach(c=>c.textContent=nf0.format(counts[c.dataset.ct]||0));
-  $('sv-mom').textContent = S.momOn? [...S.stages].map(k=>MOM_LABEL[k]).join(', ')||'None' : 'Off';
+  $('sv-mom').textContent = S.momOn? ([...S.stages].map(k=>MOM_LABEL[k]).join(', ')||'None')+(S.stages.has('early')? ' ('+L.name.toLowerCase()+')' : '') : 'Off';
 }
 
 // ---------------------------------------------------------------- the screen
@@ -3085,24 +3170,24 @@ function summary(){
   const order=SEC.concat(['Unclassified']).filter(s=>by[s]);
   $('secbar').innerHTML = order.length>1? order.map(s=>'<span class="chip">'+esc(s)+' <b class="num">'+nf0.format(by[s])+'</b></span>').join('') : '';
   // plain description of the rules in force
-  const bits=[S.preset==='tuned'? 'Sector-tuned thresholds' : 'The same thresholds for every sector'];
+  const bits=[S.preset==='tuned'? 'Sector-tuned thresholds' : 'Sector median thresholds'];
   if(perOn()) bits.push('each company judged on its own sector\'s rules');
   else if(isMulti()) bits.push('one rule set applied to every ticked sector');
   else bits.push(ruleSector()+' rules');
   if(S.loosen) bits.push((S.loosen>0? 'loosened by ' : 'tightened by ')+Math.abs(S.loosen)+' percentile points');
-  if(S.momOn) bits.push('momentum: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none'));
+  if(S.momOn) bits.push('momentum: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none')+(S.stages.has('early')? ' ('+EL().name.toLowerCase()+')' : ''));
   const off=DATA.filters.filter(f=>!S.on[f.key]).length;
   const line=bits.join(', ')+'.'+(S.strict? ' Companies missing any screened figure are excluded.' : '');
   $('rule-line').textContent=line;
   $('sv-mkt').textContent=(S.us&&S.non? 'US and outside' : S.us? 'US only' : S.non? 'Outside US only' : 'None')+(S.mq?', held':'');
-  $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Same for all')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+' pts' : '');
+  $('sv-rules').textContent=(S.preset==='tuned'?'Tuned':'Medians')+(S.loosen? (S.loosen>0?', looser ':', stricter ')+Math.abs(S.loosen)+' pts' : '');
   $('s-out').textContent= S.loosen===0? 'As set' : (S.loosen>0? 'Looser by ' : 'Stricter by ')+Math.abs(S.loosen)+' points';
   $('s-sub').textContent = S.preset==='tuned'
-    ? 'Bars at the '+ordinal(DATA.tunedPct-S.loosen)+' percentile of each sector'
+    ? (S.loosen? 'Percentile bars moved '+Math.abs(S.loosen)+' points; fixed floors stay put' : 'Moves the percentile bars; fixed floors stay put')
     : 'Moves every bar within its sector\'s spread';
   $('preset-hint').textContent = S.preset==='tuned'
-    ? 'Each sector uses only the measures that fit its business, and must beat the median company of its own sector on each. Bars are recomputed from the data on every run.'
-    : 'One set of bars for every sector. Banks and utilities rarely pass it.';
+    ? 'Each sector uses only the measures that fit its business. Quality rules (ROIC, ROE, margins) have to beat most of the sector, safety floors only remove weak balance sheets, and P/E only drops the most expensive 30%. Bars are recomputed from the data on every run.'
+    : 'Every bar is the median company of its own sector, as of the last time the numbers were written. A pass means better than a typical peer on every measure.';
   const multi=isMulti();
   $('per').disabled=!multi; $('per-wrap').classList.toggle('dis',!multi);
   $('per-wrap').title = multi? '' : 'Tick more than one sector to use this';
@@ -3232,7 +3317,7 @@ function exportData(){
     ? sectorsInPlay().map(g=>({sector: g===DATA.allLabel? 'Unclassified' : g, rules: asRules(rulesFor(g))}))
     : [{sector: isMulti()? 'Every ticked sector' : ruleSector(), rules: asRules(rulesFor(null))}];
   const strictTxt = (S.loosen? (S.loosen>0? ', loosened by ' : ', tightened by ')+Math.abs(S.loosen)+' percentile points' : '')
-    + (S.momOn? '; momentum stage: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none') : '');
+    + (S.momOn? '; momentum stage: '+([...S.stages].map(k=>MOM_LABEL[k].toLowerCase()).join(', ')||'none')+(S.stages.has('early')? ' ('+EL().name.toLowerCase()+')' : '') : '');
   const rows=cur.map(r=>({
     sym:r[IX.sym], name:r[IX.name], sector:SEC[r[IX.gics]]||'Unclassified',
     ind:(DATA.industries||[])[r[IX.ind]]||'', ctry:r[IX.ctry], mq:r[IX.mq]?1:0,
@@ -3246,7 +3331,7 @@ function exportData(){
     sectorsLabel:selectionLabel(),
     region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
     universe:S.mq? 'Superinvestor holdings only' : 'All stocks',
-    mode:(S.preset==='tuned'? 'Sector-tuned: each rule set at the '+ordinal(DATA.tunedPct)+' percentile of the sector' : 'The same thresholds for every sector')+strictTxt,
+    mode:(S.preset==='tuned'? 'Sector-tuned: quality rules beat most of the sector, safety floors low or fixed' : 'Sector medians: every bar is the median of its sector')+strictTxt,
     ruleBasis: perOn()? 'Each company judged on its own sector\'s rules'+strictTxt
              : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'+strictTxt
              : 'The '+ruleSector()+' rules, as set on screen'+strictTxt,
@@ -3311,7 +3396,7 @@ function copyRules(){
 function save(){
   try{ localStorage.setItem(STORE, JSON.stringify({sel:[...S.sel], us:S.us, non:S.non, mq:S.mq, preset:S.preset,
     per:S.per, strict:S.strict, loosen:S.loosen, on:S.on, val:S.val, perPage:S.perPage, sortKey:S.sortKey,
-    sortDir:S.sortDir, momOn:S.momOn, stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
+    sortDir:S.sortDir, momOn:S.momOn, early:S.early, stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
 }
 function restore(){
   try{
@@ -3319,15 +3404,16 @@ function restore(){
     if(!o || o.nsec!==SEC.length) return false;
     Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
       loosen:o.loosen||0, on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
-      momOn:!!o.momOn, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
+      momOn:!!o.momOn, early:o.early||3, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
     return true;
   }catch(e){ return false; }
 }
 function defaults(){
   Object.assign(S,{sel:new Set(SEC.map((_,i)=>i).concat([OTHER])), us:true, non:true, mq:false, q:'',
     preset:DATA.mode, per:DATA.perSector, strict:DATA.blankFails, loosen:0, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
-    momOn:false, stages:new Set(['early']), sigs:new Set(SIGS.map(s=>s.k))});
+    momOn:false, early:3, stages:new Set(['early']), sigs:new Set(SIGS.map(s=>s.k))});
   resetRules();
+  ROWS.forEach(r=>{ delete r._sig; });
 }
 function syncControls(){
   $('m-us').checked=S.us; $('m-non').checked=S.non; $('m-mq').checked=S.mq; $('q').value=S.q;
@@ -3357,6 +3443,10 @@ function init(){
   $('per').onchange=e=>{ S.per=e.target.checked; changed(true); };
   $('strict').onchange=e=>{ S.strict=e.target.checked; changed(); };
   $('s-rng').oninput=e=>{ S.loosen=parseInt(e.target.value,10); clearTimeout(inputTimer); inputTimer=setTimeout(()=>changed(),60); };
+  $('e-rng').oninput=e=>{ S.early=parseInt(e.target.value,10); ROWS.forEach(r=>{ delete r._sig; });
+    // moving it means the user wants early names, so switch the stage filter on
+    if(!S.momOn){ S.momOn=true; S.stages=new Set(['early']); }
+    clearTimeout(inputTimer); inputTimer=setTimeout(()=>changed(),60); };
   $('c-all').onclick=()=>{ DATA.filters.forEach(f=>S.on[f.key]=true);
     if(!perOn()) DATA.filters.forEach(f=>{ if(!isNum(S.val[f.key])) S.val[f.key]=isNum(DATA.defaults[f.key])? DATA.defaults[f.key] : null; });
     changed(); };
