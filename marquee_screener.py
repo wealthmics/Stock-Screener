@@ -277,7 +277,8 @@ DEFAULT_FILTERS = {
 #     None to switch that filter off.
 #
 #     SECTOR_OVERRIDES  is the 'base' set. Every bar is the median company of its own
-#                       sector (22 October 2026 data, companies above $300M only), using
+#                       sector (22 October 2026 data, companies above $300M only), except
+#                       P/E, which is the median of the sector's quality peers, using
 #                       the same measures per sector as SECTOR_RULES. A company that passes
 #                       beats the typical company of its sector on every measure. These are
 #                       written numbers, so they stay put until you edit them.
@@ -289,9 +290,10 @@ DEFAULT_FILTERS = {
 SECTOR_OVERRIDES = {
 
     # ---- All Sectors ---------------------------------------------------------------
-    # medians of 18,269 companies above $300M (whole market, sector split ignored)
+    # medians of 18,269 companies above $300M (whole market, sector split ignored); P/E is the median of
+    # the 5,844 quality peers among them
     'All Sectors': {
-        'pe_max'            : 19.4  ,
+        'pe_max'            : 14.4  ,
         'roe_min'           : 8.4   ,
         'roic_min'          : 5.9   ,
         'roce_min'          : None  ,
@@ -309,29 +311,31 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Information Technology ----------------------------------------------------
-    # medians of 2,783 companies above $300M
+    # medians of 2,610 companies above $300M; P/E is the median of
+    # the 895 quality peers among them
     'Information Technology': {
-        'pe_max'            : 35.9  ,
+        'pe_max'            : 22.3  ,
         'roe_min'           : 7.4   ,
         'roic_min'          : 6.1   ,
         'roce_min'          : None  ,
         'roa_min'           : None  ,
-        'gross_margin_min'  : 30.3  ,
-        'op_margin_min'     : 6.8   ,
+        'gross_margin_min'  : 30.9  ,
+        'op_margin_min'     : 6.7   ,
         'net_margin_min'    : 6.3   ,
         'fcf_margin_min'    : 5.2   ,
-        'altman_min'        : 4.89  ,
+        'altman_min'        : 4.95  ,
         'piotroski_min'     : 6     ,
-        'current_ratio_min' : 1.98  ,
-        'de_max'            : 0.24  ,
-        'int_cov_min'       : 6.8   ,
+        'current_ratio_min' : 1.97  ,
+        'de_max'            : 0.23  ,
+        'int_cov_min'       : 6.9   ,
         'mcap_min'          : 300e6 ,
     },
 
     # ---- Communication Services ----------------------------------------------------
-    # medians of 192 companies above $300M
+    # medians of 192 companies above $300M; P/E is the median of
+    # the 59 quality peers among them
     'Communication Services': {
-        'pe_max'            : 15.7  ,
+        'pe_max'            : 14.0  ,
         'roe_min'           : 11.7  ,
         'roic_min'          : 6.4   ,
         'roce_min'          : None  ,
@@ -349,9 +353,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Consumer Discretionary ----------------------------------------------------
-    # medians of 1,772 companies above $300M
+    # medians of 1,772 companies above $300M; P/E is the median of
+    # the 508 quality peers among them
     'Consumer Discretionary': {
-        'pe_max'            : 18.1  ,
+        'pe_max'            : 15.7  ,
         'roe_min'           : 8.8   ,
         'roic_min'          : 6.1   ,
         'roce_min'          : None  ,
@@ -369,9 +374,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Consumer Staples ----------------------------------------------------------
-    # medians of 1,219 companies above $300M
+    # medians of 1,219 companies above $300M; P/E is the median of
+    # the 432 quality peers among them
     'Consumer Staples': {
-        'pe_max'            : 18.8  ,
+        'pe_max'            : 15.6  ,
         'roe_min'           : 10.1  ,
         'roic_min'          : 7.9   ,
         'roce_min'          : None  ,
@@ -389,9 +395,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Health Care ---------------------------------------------------------------
-    # medians of 1,476 companies above $300M
+    # medians of 1,476 companies above $300M; P/E is the median of
+    # the 333 quality peers among them
     'Health Care': {
-        'pe_max'            : 27.2  ,
+        'pe_max'            : 18.2  ,
         'roe_min'           : 4.7   ,
         'roic_min'          : 3.6   ,
         'roce_min'          : None  ,
@@ -409,9 +416,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Financials ----------------------------------------------------------------
-    # medians of 2,095 companies above $300M
+    # medians of 2,095 companies above $300M; P/E is the median of
+    # the 1,108 quality peers among them
     'Financials': {
-        'pe_max'            : 12.1  ,
+        'pe_max'            : 10.7  ,
         'roe_min'           : 11.8  ,
         'roic_min'          : None  ,
         'roce_min'          : None  ,
@@ -429,9 +437,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Energy --------------------------------------------------------------------
-    # medians of 349 companies above $300M
+    # medians of 349 companies above $300M; P/E is the median of
+    # the 110 quality peers among them, 60th percentile as earnings here are cyclical
     'Energy': {
-        'pe_max'            : 13.5  ,
+        'pe_max'            : 11.8  ,
         'roe_min'           : 10.3  ,
         'roic_min'          : 6.9   ,
         'roce_min'          : None  ,
@@ -449,9 +458,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Materials -----------------------------------------------------------------
-    # medians of 2,347 companies above $300M
+    # medians of 2,347 companies above $300M; P/E is the median of
+    # the 568 quality peers among them, 60th percentile as earnings here are cyclical
     'Materials': {
-        'pe_max'            : 20.0  ,
+        'pe_max'            : 15.2  ,
         'roe_min'           : 6.6   ,
         'roic_min'          : 5.2   ,
         'roce_min'          : None  ,
@@ -469,29 +479,31 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Industrials ---------------------------------------------------------------
-    # medians of 3,974 companies above $300M
+    # medians of 4,147 companies above $300M; P/E is the median of
+    # the 1,171 quality peers among them
     'Industrials': {
-        'pe_max'            : 22.8  ,
+        'pe_max'            : 17.8  ,
         'roe_min'           : 8.5   ,
         'roic_min'          : 6.4   ,
         'roce_min'          : None  ,
         'roa_min'           : None  ,
-        'gross_margin_min'  : 22.2  ,
-        'op_margin_min'     : 7.9   ,
-        'net_margin_min'    : 6.1   ,
+        'gross_margin_min'  : 22.3  ,
+        'op_margin_min'     : 8.0   ,
+        'net_margin_min'    : 6.0   ,
         'fcf_margin_min'    : 4.9   ,
-        'altman_min'        : 3.07  ,
+        'altman_min'        : 3.10  ,
         'piotroski_min'     : 6     ,
-        'current_ratio_min' : 1.65  ,
+        'current_ratio_min' : 1.66  ,
         'de_max'            : 0.43  ,
         'int_cov_min'       : 6.4   ,
         'mcap_min'          : 300e6 ,
     },
 
     # ---- Utilities -----------------------------------------------------------------
-    # medians of 567 companies above $300M
+    # medians of 567 companies above $300M; P/E is the median of
+    # the 217 quality peers among them
     'Utilities': {
-        'pe_max'            : 16.8  ,
+        'pe_max'            : 12.8  ,
         'roe_min'           : 9.0   ,
         'roic_min'          : None  ,
         'roce_min'          : None  ,
@@ -509,9 +521,10 @@ SECTOR_OVERRIDES = {
     },
 
     # ---- Real Estate ---------------------------------------------------------------
-    # medians of 1,024 companies above $300M
+    # medians of 1,024 companies above $300M; P/E is the median of
+    # the 252 quality peers among them, 60th percentile as earnings here are cyclical
     'Real Estate': {
-        'pe_max'            : 14.5  ,
+        'pe_max'            : 10.7  ,
         'roe_min'           : 6.7   ,
         'roic_min'          : None  ,
         'roce_min'          : None  ,
@@ -803,9 +816,11 @@ SECTOR_PRESETS = {
 #   Safety floors   Debt, interest cover, current ratio, net margin, Altman Z. These only
 #                   remove weak balance sheets, so they sit low (20th to 25th percentile) or
 #                   at a fixed textbook number.
-#   Valuation       P/E only drops the most expensive 30% of a sector, and never allows more
-#                   than 45x. Quality usually costs a premium, so a median P/E cap would throw
-#                   the best businesses out.
+#   Valuation       P/E is judged against quality peers only: companies in the same sector
+#                   with ROIC of at least 10% (ROE for banks, property and utilities). Loss
+#                   makers and thin earners have inflated trailing P/Es, and in IT a large
+#                   block of richly valued Chinese names would otherwise set the bar. The bar
+#                   drops the most expensive 30% of those peers and never allows above 45x.
 #
 # Percentiles are taken among companies above MCAP_FLOOR only, since those are the only
 # ones that can pass. Small caps used to drag every median down.
@@ -816,6 +831,10 @@ SECTOR_PRESETS = {
 #   limit       for '_min' rules the bar is never below it, for '_max' rules never above it.
 #               None = no limit.
 MCAP_FLOOR = 300e6           # US dollars. A fixed liquidity floor, never moved by the slider.
+
+# Quality peers, the group P/E is compared against. ROE is used where ROIC means little.
+PEER_ROIC_MIN = 10
+PEER_BY_ROE = {'Financials', 'Real Estate', 'Utilities'}
 
 RULE_TARGETS = {
     # quality
@@ -909,6 +928,14 @@ def rule_target(sector, key):
     return t, lim
 
 
+def quality_peers(df):
+    """Rows earning at least PEER_ROIC_MIN on ROIC, or on ROE in PEER_BY_ROE sectors."""
+    roic = pd.to_numeric(df[FILTER_SPECS['roic_min'][0]], errors='coerce')
+    roe = pd.to_numeric(df[FILTER_SPECS['roe_min'][0]], errors='coerce')
+    by_roe = df['GICS Sector'].isin(PEER_BY_ROE)
+    return df[(by_roe & (roe >= PEER_ROIC_MIN)) | (~by_roe & (roic >= PEER_ROIC_MIN))]
+
+
 def compute_tuned(universe):
     """Set every tuned bar from the data, rule by rule, see RULE_TARGETS."""
     COMPUTED_TUNED.clear()
@@ -918,8 +945,9 @@ def compute_tuned(universe):
     for sector in [ALL_LABEL] + list(SECTOR_MAP):
         sub = investable if sector == ALL_LABEL else investable[investable['GICS Sector'] == sector]
         dist, block = {}, {}
+        peers = quality_peers(sub)
         for key in DEFAULT_FILTERS:
-            s = _measure(sub, key)
+            s = _measure(peers if key == 'pe_max' else sub, key)
             if len(s) >= 20:
                 dist[key] = [round(float(s.quantile(q / 20)), 6) for q in range(21)]
             if key not in SECTOR_RULES.get(sector, _CORE):
@@ -976,6 +1004,10 @@ SECTOR_MAP = {
 # them from the Financials sheet.
 REAL_ESTATE_INDUSTRY = re.compile(r'real estate|reit', re.I)
 PULL_REITS_OUT_OF_FINANCE = True     # set False to leave the Real Estate sheet empty
+
+# Industries TradingView files under the wrong sector for GICS purposes. Aerospace & defense
+# sits inside "Electronic technology", which would put defense contractors in IT.
+INDUSTRY_TO_GICS = {'Aerospace & defense': 'Industrials'}
 
 ALL_LABEL = 'All Sectors'      # the combined, no-sector-split screen
 
@@ -1685,6 +1717,9 @@ def assign_gics(df):
         for tv in tvs:
             tv2gics[tv.strip().lower()] = g
     g = df['Sector'].astype(str).str.strip().str.lower().map(tv2gics)
+    ind = df['Industry'].astype(str).str.strip()
+    for name, target in INDUSTRY_TO_GICS.items():
+        g = g.where(ind != name, target)
     if PULL_REITS_OUT_OF_FINANCE:
         is_re = df['Industry'].astype(str).str.contains(REAL_ESTATE_INDUSTRY)
         g = g.where(~is_re, 'Real Estate')
@@ -1812,8 +1847,10 @@ def metric_groups(prefix=''):
             ('Altman Z-Score', p + 'Altman Z-score, Trailing 12 months', Z),
             ('Piotroski F-Score', p + 'Piotroski F-score, Trailing 12 months', F)]),
         ('Price Performance', '7A1F3D', [
-            ('YTD %', p + 'Performance %, Year to date', PCT),
+            ('1M %', p + 'Performance %, 1 month', PCT),
+            ('3M %', p + 'Performance %, 3 months', PCT),
             ('6M %', p + 'Performance %, 6 months', PCT),
+            ('YTD %', p + 'Performance %, Year to date', PCT),
             ('1Y %', p + 'Performance %, 1 year', PCT),
             ('5Y Cumulative %', p + 'Performance %, 5 years', PCT),
             ('5Y Annualised % (CAGR)', '__CAGR5__', PCT)]),
@@ -3206,6 +3243,8 @@ const COLS = [
   {k:'om',   h:'Op. margin', t:'p'}, {k:'nm', h:'Net margin', t:'p'}, {k:'fcfm', h:'FCF margin', t:'p'},
   {k:'de',   h:'Debt / equity', t:'n2'}, {k:'ic', h:'Int. cover', t:'x'}, {k:'cr', h:'Current ratio', t:'n2'},
   {k:'az',   h:'Altman Z', t:'n2'}, {k:'pf', h:'Piotroski', t:'pf'},
+  {k:'m1',   h:'1 month', t:'p', signed:true}, {k:'m3', h:'3 months', t:'p', signed:true},
+  {k:'m6',   h:'6 months', t:'p', signed:true}, {k:'ytd', h:'YTD', t:'p', signed:true},
   {k:'y1',   h:'1 year', t:'p', signed:true}, {k:'cagr', h:'5 yr a year', t:'p', signed:true,
     get:r=>cagr(r[IX.y5])},
   {k:'mom',  h:'Momentum', cls:'l', sort:r=>momScore(r), fmt:r=>{ const st=r._stage||momStage(r);
@@ -3324,7 +3363,7 @@ function exportData(){
     inv:r[IX.inv], wt:r[IX.wt], mcap:r[IX.mcap], pe:r[IX.pe], fpe:r[IX.fpe], roe:r[IX.roe],
     roa:r[IX.roa], roic:r[IX.roic], roce:r[IX.roce], gm:r[IX.gm], om:r[IX.om], nm:r[IX.nm],
     fcfm:r[IX.fcfm], cr:r[IX.cr], de:r[IX.de], ic:r[IX.ic], az:r[IX.az], pf:r[IX.pf],
-    ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy],
+    m1:r[IX.m1], m3:r[IX.m3], m6:r[IX.m6], ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy],
     mom:MOM_LABEL[r._stage||momStage(r)], momScore:momScore(r)}));
   return {rows, meta:{
     asOf:DATA.stamp.data, marqueeAsOf:DATA.stamp.marquee, sectorOrder:SEC.concat(['Unclassified']),
@@ -3366,12 +3405,12 @@ async function doExport(btn,kind){
 function downloadCsv(){
   const head=['Ticker','Company','Sector','Country','Market cap (USD)','P/E','Fwd P/E','ROE %','ROA %','ROIC %',
     'Op margin %','Net margin %','FCF margin %','Debt/equity','Interest cover','Current ratio','Altman Z','Piotroski',
-    '1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN'];
+    '1 month %','3 months %','6 months %','YTD %','1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN'];
   const q=v=>{ if(v===null||v===undefined||Number.isNaN(v)) return ''; const s=String(v);
     return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
   const body=cur.map(r=>[r[IX.sym],r[IX.name],SEC[r[IX.gics]]||'Unclassified',r[IX.ctry],r[IX.mcap],r[IX.pe],r[IX.fpe],
     r[IX.roe],r[IX.roa],r[IX.roic],r[IX.om],r[IX.nm],r[IX.fcfm],r[IX.de],r[IX.ic],r[IX.cr],r[IX.az],r[IX.pf],
-    r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
+    r[IX.m1],r[IX.m3],r[IX.m6],r[IX.ytd],r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\ufeff'+head.join(',')+'\n'+body.join('\n')],{type:'text/csv'}));
   a.download=fileStem()+'.csv'; a.click();
@@ -3552,7 +3591,8 @@ const XP = (() => {
       ['Balance sheet', [['cr', 'Current ratio', 9, '0.00'], ['de', 'Debt / equity', 9, '0.00'],
                          ['ic', 'Interest cover', 9, '0.0"x"']]],
       ['Quality scores', [['az', 'Altman Z', 9, '0.00'], ['pf', 'Piotroski F', 9, '0']]],
-      ['Price performance', [['ytd', 'YTD %', 9, '0.0"%";-0.0"%"'], ['y1', '1 year %', 9, '0.0"%";-0.0"%"'],
+      ['Price performance', [['m1', '1 month %', 9, '0.0"%";-0.0"%"'], ['m3', '3 months %', 9, '0.0"%";-0.0"%"'],
+                             ['m6', '6 months %', 9, '0.0"%";-0.0"%"'], ['ytd', 'YTD %', 9, '0.0"%";-0.0"%"'], ['y1', '1 year %', 9, '0.0"%";-0.0"%"'],
                              ['y5', '5 year %', 9, '0.0"%";-0.0"%"'],
                              ['cagr', '5 year a year %', 10, '0.0"%";-0.0"%"'],
                              ['px', 'Price', 11, '#,##0.00'], ['ccy', 'Ccy', 7, '@']]],
