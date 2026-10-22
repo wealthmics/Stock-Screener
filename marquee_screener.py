@@ -2729,6 +2729,7 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
   <a class="toplink" id="idx-link" href="#" target="_blank" rel="noopener" hidden>Index analysis</a>
   <div><span>Company data</span><b id="d-data"></b></div>
   <div><span>Superinvestor holdings</span><b id="d-mq"></b></div>
+  <div><span>Page built</span><b id="d-built"></b></div>
  </div>
 </div></header>
 
@@ -3466,10 +3467,16 @@ function copyRules(){
 }
 
 // ---------------------------------------------------------------- remember settings
+function rulesSig(){
+  // a short fingerprint of today's rule sets, so settings saved against older rules are not reused
+  const t=JSON.stringify([DATA.tuned,DATA.base,DATA.ruleSets]); let h=0;
+  for(let i=0;i<t.length;i++) h=(h*31+t.charCodeAt(i))|0;
+  return String(h);
+}
 function save(){
   try{ localStorage.setItem(STORE, JSON.stringify({sel:[...S.sel], us:S.us, non:S.non, mq:S.mq, preset:S.preset,
     per:S.per, strict:S.strict, loosen:S.loosen, on:S.on, val:S.val, perPage:S.perPage, sortKey:S.sortKey,
-    sortDir:S.sortDir, momOn:S.momOn, early:S.early, stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
+    sortDir:S.sortDir, momOn:S.momOn, early:S.early, sig:rulesSig(), stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
 }
 function restore(){
   try{
@@ -3478,6 +3485,7 @@ function restore(){
     Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
       loosen:Math.max(-25,Math.min(25,o.loosen||0)), on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
       momOn:!!o.momOn, early:o.early||3, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
+    if(o.sig!==rulesSig()){ S.loosen=0; resetRules(); }   // the rules were rebuilt since this was saved
     return true;
   }catch(e){ return false; }
 }
@@ -3498,6 +3506,7 @@ function syncControls(){
 // ---------------------------------------------------------------- wiring
 function init(){
   $('d-data').textContent=DATA.stamp.data; $('d-mq').textContent=DATA.stamp.marquee;
+  $('d-built').textContent=DATA.stamp.builtAt||DATA.stamp.built||'';
   if(DATA.xlsxUrl){ const a=$('xlsx'); a.href=DATA.xlsxUrl; a.style.display=''; }
   if(DATA.deepUrl){ const l=$('idx-link'); l.href=DATA.deepUrl+'/?view=indexes'; l.hidden=false; }
   if(DATA.deepUrl) $('hint').textContent='Click a ticker to open its full analysis. Click a column heading to sort. Exports always contain every company that passes, not only this page.';
@@ -4195,7 +4204,8 @@ def main():
     d_all, d_dr = file_date(p_all), file_date(p_dr)
     stamp = {'data': pretty_date(d_all), 'marquee': pretty_date(d_dr),
              'iso': d_all.isoformat(),
-             'built': pretty_date(datetime.date.today())}
+             'built': pretty_date(datetime.date.today()),
+             'builtAt': datetime.datetime.now(datetime.timezone.utc).strftime('%d %b %Y, %H:%M UTC')}
     print(f'      data as of  : {stamp["data"]}   (marquee list {stamp["marquee"]})')
     print(f'      universe    : {os.path.basename(p_all)}')
     print(f'      marquee     : {os.path.basename(p_dr)}')
