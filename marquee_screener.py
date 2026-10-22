@@ -146,7 +146,11 @@ SCREEN_UNIVERSE = 'all'    # 'all' = full universe, 'marquee' = superinvestor ho
 # normal auto-detection picks it up like any other export.
 SCRAPE_DATAROMA = 'auto'
 DATAROMA_MAX_AGE_DAYS = 0     # 0 = refresh on every run that does not already have today's file
-DATAROMA_PAGES = 15        # the scraper stops early on its own if a page comes back empty
+DATAROMA_PAGES = 15
+# Keep only the newest Dataroma file in DATA_DIR. Every older dataroma_portfolio_*.csv, and any
+# other CSV recognised as a Dataroma export, is deleted once the newest one is chosen, so the
+# folder never fills up. The workflow commits the deletion along with everything else.
+KEEP_ONLY_LATEST_DATAROMA = True        # the scraper stops early on its own if a page comes back empty
 
 # Which threshold set to run.
 #   'base'   every sector uses the identical DEFAULT_FILTERS values (SECTOR_OVERRIDES).
@@ -1382,6 +1386,27 @@ def load_marquee(path):
 
 
 # ------------------------------------------------------------------ dataroma scrape ---
+def prune_old_marquee(data_dir, keep):
+    """Delete every Dataroma file except the one in use."""
+    if not KEEP_ONLY_LATEST_DATAROMA or not keep:
+        return
+    keep = os.path.abspath(keep)
+    gone = []
+    for path in glob.glob(os.path.join(data_dir, '*.csv')):
+        if os.path.abspath(path) == keep:
+            continue
+        name = os.path.basename(path)
+        if name.lower().startswith('dataroma_portfolio') or classify(path) == 'marquee':
+            try:
+                os.remove(path)
+                gone.append(name)
+            except OSError as e:
+                print(f'      [WARN] could not delete {name}: {e}')
+    if gone:
+        print(f'      removed {len(gone)} older Dataroma file(s), keeping only '
+              f'{os.path.basename(keep)}')
+
+
 def scrape_dataroma(data_dir):
     """Pull the superinvestor aggregate holdings off dataroma.com into a CSV.
 
@@ -4002,6 +4027,7 @@ def main():
     elif why:
         print(f'      dataroma scrape skipped - {why}')
     p_all, p_dr = find_files(args.data_dir)
+    prune_old_marquee(args.data_dir, p_dr)
     d_all, d_dr = file_date(p_all), file_date(p_dr)
     stamp = {'data': pretty_date(d_all), 'marquee': pretty_date(d_dr),
              'iso': d_all.isoformat(),
