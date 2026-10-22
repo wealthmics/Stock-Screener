@@ -193,6 +193,10 @@ PUBLISH_DIR = ''
 # a static page cannot call Yahoo directly, since Yahoo sends no CORS header.
 #   DEEP_APP_URL = 'https://your-app.streamlit.app'
 DEEP_APP_URL = 'https://mics-deep-analysis-dcxigpgnhvhywvq2599eh3.streamlit.app'
+# The deep analysis scorecard, loaded from the deep app's own repo on each run so the export
+# and the deep page always use the same scoring. A local deep_scoring.py next to this script
+# is used first if present; if neither is reachable the export simply leaves those columns out.
+DEEP_SCORING_URL = 'https://raw.githubusercontent.com/wealthmics/mics-deep-analysis/main/scoring.py'
 
 # --------------------------------------------------------------------------------------
 # GitHub upload. With this on, the screener is pushed straight to the repo at the end of
@@ -2324,6 +2328,69 @@ def _clean_number(value):
     return value
 
 
+DEEP_CARDS = {}               # 'TICKER|CCY' -> compact deep scorecard, for the web page export
+
+
+def load_deep_scoring():
+    """The deep app's scoring module, or None."""
+    import importlib.util, types, urllib.request
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deep_scoring.py')
+    try:
+        if os.path.exists(local):
+            spec = importlib.util.spec_from_file_location('deep_scoring', local)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+        with urllib.request.urlopen(DEEP_SCORING_URL, timeout=20) as fh:
+            code = fh.read().decode('utf-8')
+        mod = types.ModuleType('deep_scoring')
+        exec(compile(code, DEEP_SCORING_URL, 'exec'), mod.__dict__)
+        return mod
+    except Exception as e:
+        print(f'      [WARN] deep scorecard not loaded ({e}); the export will leave it out')
+        return None
+
+
+def _snapshot_momentum(tv):
+    """A trend reading from the snapshot averages, in the shape the deep scorecard expects.
+    The deep page reads the full price history instead, so it can also date the crossover."""
+    px, a, b, rsi = (tv.get(k) for k in ('price', 'ema50', 'ema200', 'rsi14'))
+    if not all(isinstance(x, (int, float)) for x in (px, a, b)) or a <= 0:
+        return None
+    stretch = (px / a - 1) * 100
+    if px > a * 1.25 or (isinstance(rsi, (int, float)) and rsi > 75 and px > a):
+        return {'score': 50, 'text': f'The price is {stretch:.0f}% above its 50 day average: strong, but stretched.'}
+    # same stages as the screener page, so the export never shows two different readings
+    if px > a and a > b * 1.10:
+        return {'score': 70, 'text': 'Above both averages with the 50 day well over the 200 day: an established uptrend.'}
+    if px < a < b:
+        return {'score': 20, 'text': 'Below both averages with the 50 day under the 200 day: a downtrend.'}
+    return {'score': 45, 'text': 'Between its averages: no clear trend either way.'}
+
+
+def build_deep_cards(stocks, stats):
+    """Score every name in the deep feed with the deep app's scorecard, from snapshot data."""
+    DEEP_CARDS.clear()
+    mod = load_deep_scoring()
+    if mod is None:
+        return
+    short = {'Quality': 'q', 'Financial strength': 'f', 'Valuation': 'v', 'Momentum': 'm', 'Signals': 'g'}
+    for tv in stocks.values():
+        try:
+            mo = _snapshot_momentum(tv)
+            sc = mod.score(tv, stats.get(tv.get('gics')) or {}, {}, {'momentum': mo} if mo else {},
+                           [], {}, [])
+        except Exception:
+            continue
+        card = {'s': sc.get('overall'), 'o': sc.get('opinion'), 'c': sc.get('coverage'),
+                'l': sc.get('lifts') or [], 'd': sc.get('drags') or [], 'x': sc.get('flags') or []}
+        for name, p in (sc.get('pillars') or {}).items():
+            if p and name in short:
+                card[short[name]] = p.get('score')
+        DEEP_CARDS[f"{tv.get('ticker')}|{(tv.get('ccy') or '').upper()}"] = card
+    print(f'      deep scorecard -> {len(DEEP_CARDS)} names scored for the export')
+
+
 def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
     """Write stocks.json and sector_stats.json for the deep analysis app.
 
@@ -2404,6 +2471,7 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
             key = f"TV:{str(r['Symbol']).strip().upper()}:{str(r.get('Price - Currency') or '').upper()}"
         stocks[key] = entry
 
+    build_deep_cards(stocks, stats)
     feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
             'built': stamp['built'], 'source': 'TradingView screener export',
             'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
@@ -2498,6 +2566,7 @@ def build_html(a2, out_path, stamp, split=False):
         'tunedPct': 50,
         'fixedBy': fixed_rules(),
         'marketDist': MARKET_DIST,
+        'deep': DEEP_CARDS,
         'ruleSets': SECTOR_RULES,
         'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
         'notUsedWhy': not_used_why(),
@@ -3391,6 +3460,61 @@ function selectionLabel(){
   const names=r.map(i=>SEC[i]).concat(S.sel.has(OTHER)?['Unclassified']:[]);
   return names.length<=1? names.join('') : names.slice(0,-1).join(', ')+' and '+names[names.length-1];
 }
+// ---------------------------------------------------------------- why each name passed
+// Reads the rules the company was actually judged on, and where each of its figures sits in
+// the same spread the bars came from (its own sector for the tuned set, the whole market for
+// the same-for-all set).
+function passReasons(r){
+  const key=r[IX.gics], g=(key===null||key===undefined)? DATA.allLabel : SEC[key];
+  const rules=perOn()? rulesFor(g) : rulesFor(null);
+  const ds=perOn()? g : ruleSector(), grp=S.preset==='tuned'? 'sector' : 'market';
+  const items=[]; let missing=0;
+  for(const f of rules){
+    if(f.key==='mcap_min') continue;
+    const v=r[IX[f.field]]; if(!isNum(v)){ missing++; continue; }
+    const d=distOf(ds,f.key); let rank=null;
+    if(d){ const p=pctOf(v,d); rank=f.dir==='min'? p : 100-p; }
+    const m=CRIT[f.key];
+    items.push({rank, txt:m.short+' '+ruleNum(v,m.u), bar:(f.dir==='min'?'bar \u2265 ':'bar \u2264 ')+ruleNum(f.val,m.u)});
+  }
+  const ranked=items.filter(x=>x.rank!==null).sort((a,b)=>b.rank-a.rank);
+  const where=x=> x.rank>=90? 'top '+Math.max(1,Math.round(100-x.rank))+'% of '+grp
+               : x.rank>=50? (grp==='sector'? 'better than ' : 'beats ')+Math.round(x.rank)+'% of '+grp
+               : 'only '+Math.round(x.rank)+'% of '+grp;
+  const best=ranked.slice(0,3).map(x=>x.txt+', '+where(x));
+  const list=ranked.slice(0,3).map(x=>({txt:x.txt, where:where(x)}));
+  const worst=ranked.length? ranked[ranked.length-1] : null;
+  return {
+    passed: 'Cleared '+items.length+' rules'+(missing? ', '+missing+' not reported' : ''),
+    why: best.join('; '), list,
+    close: worst? worst.txt+' ('+worst.bar+'), '+where(worst) : ''
+  };
+}
+// the sector's median company on the measures a profile slide compares against
+function sectorMedians(r){
+  const key=r[IX.gics], g=(key===null||key===undefined)? DATA.allLabel : SEC[key], d=(DATA.dist||{})[g]||{};
+  const at=k=>d[k]? d[k][10] : null;
+  return {pe:at('pe_max'), roic:at('roic_min'), roe:at('roe_min'), gm:at('gross_margin_min'),
+          om:at('op_margin_min'), fcfm:at('fcf_margin_min'), de:at('de_max'), az:at('altman_min'),
+          roa:at('roa_min'), nm:at('net_margin_min')};
+}
+// figures that are not believable for an operating business: usually a holding company's
+// investment gains or a one-off, so the screen and the scorecard both read them too kindly
+function dataChecks(r){
+  const out=[], g=k=>r[IX[k]];
+  const big=(k,lab)=>{ const v=g(k); if(isNum(v)&&Math.abs(v)>100) out.push(lab+' of '+v.toFixed(0)+'% is not plausible for an operating business'); };
+  big('om','Operating margin'); big('nm','Net margin'); big('fcfm','Free cash flow margin');
+  const pe=g('pe'); if(isNum(pe)&&pe>0&&pe<3) out.push('A P/E of '+pe.toFixed(1)+' usually means one-off or investment gains, not repeatable earnings');
+  return out;
+}
+function deepLink(r){
+  if(!DATA.deepUrl) return '';
+  let q='?ticker='+encodeURIComponent(r[IX.sym]||'');
+  if(r[IX.isin]) q+='&isin='+encodeURIComponent(r[IX.isin]);
+  if(r[IX.ccy]) q+='&ccy='+encodeURIComponent(r[IX.ccy]);
+  return DATA.deepUrl+'/'+q;
+}
+function deepCard(r){ return (DATA.deep||{})[(r[IX.sym]||'')+'|'+String(r[IX.ccy]||'').toUpperCase()] || null; }
 function exportData(){
   const txt=(k,f,v)=>(f.dir==='min'?'\u2265 ':'\u2264 ')+ruleNum(v,CRIT[k].u);
   const asRules=list=>Object.fromEntries(list.map(x=>{ const f=DATA.filters.find(y=>y.key===x.key);
@@ -3407,8 +3531,17 @@ function exportData(){
     roa:r[IX.roa], roic:r[IX.roic], roce:r[IX.roce], gm:r[IX.gm], om:r[IX.om], nm:r[IX.nm],
     fcfm:r[IX.fcfm], cr:r[IX.cr], de:r[IX.de], ic:r[IX.ic], az:r[IX.az], pf:r[IX.pf],
     m1:r[IX.m1], m3:r[IX.m3], m6:r[IX.m6], ytd:r[IX.ytd], y1:r[IX.y1], y5:r[IX.y5], cagr:cagr(r[IX.y5]), px:r[IX.px], ccy:r[IX.ccy],
-    mom:MOM_LABEL[r._stage||momStage(r)], momScore:momScore(r)}));
-  return {rows, meta:{
+    mom:MOM_LABEL[r._stage||momStage(r)], momScore:momScore(r),
+    ...(()=>{ const pr=passReasons(r), dc=deepCard(r);
+      const join=a=>(a||[]).map(x=>String(x).replace(/\.$/,'')).join('; ');
+      return { passed:pr.passed, why:pr.why, close:pr.close,
+        dScore:dc? dc.s : null, dOp:dc? dc.o : 'Not scored', dQ:dc? dc.q : null, dF:dc? dc.f : null,
+        dV:dc? dc.v : null, dM:dc? dc.m : null, dG:dc? dc.g : null, dCov:dc? dc.c : null,
+        dLifts:dc? (dc.l||[]) : [], dDrags:dc? (dc.d||[]) : [], dFlags:dc? (dc.x||[]) : [],
+        whyList:pr.list, closeTxt:pr.close, med:sectorMedians(r), link:deepLink(r), checks:dataChecks(r),
+        useKeys:ruleSetFor((r[IX.gics]===null||r[IX.gics]===undefined)? DATA.allLabel : SEC[r[IX.gics]]),
+        dLift:dc? join(dc.l) : '', dDrag:join(dataChecks(r).map(x=>'Check the data: '+x).concat(dc? (dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[]) : [])) }; })()}));
+  return {deepNote: 'Deep analysis scorecard from the snapshot figures: each figure scored against its sector, five weighted pillars, Buy from 70, Hold from 45. The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. Names outside the deep feed are marked Not scored.', rows, meta:{
     asOf:DATA.stamp.data, marqueeAsOf:DATA.stamp.marquee, sectorOrder:SEC.concat(['Unclassified']),
     sectorsLabel:selectionLabel(),
     region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
@@ -3448,12 +3581,16 @@ async function doExport(btn,kind){
 function downloadCsv(){
   const head=['Ticker','Company','Sector','Country','Market cap (USD)','P/E','Fwd P/E','ROE %','ROA %','ROIC %',
     'Op margin %','Net margin %','FCF margin %','Debt/equity','Interest cover','Current ratio','Altman Z','Piotroski',
-    '1 month %','3 months %','6 months %','YTD %','1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN'];
+    '1 month %','3 months %','6 months %','YTD %','1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN',
+    'Why it passed','Closest call','Deep score','Deep opinion','Deep quality','Deep financial strength','Deep valuation','Deep momentum','Lifting the score','Holding it back'];
   const q=v=>{ if(v===null||v===undefined||Number.isNaN(v)) return ''; const s=String(v);
     return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
   const body=cur.map(r=>[r[IX.sym],r[IX.name],SEC[r[IX.gics]]||'Unclassified',r[IX.ctry],r[IX.mcap],r[IX.pe],r[IX.fpe],
     r[IX.roe],r[IX.roa],r[IX.roic],r[IX.om],r[IX.nm],r[IX.fcfm],r[IX.de],r[IX.ic],r[IX.cr],r[IX.az],r[IX.pf],
-    r[IX.m1],r[IX.m3],r[IX.m6],r[IX.ytd],r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]].map(q).join(','));
+    r[IX.m1],r[IX.m3],r[IX.m6],r[IX.ytd],r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]]
+    .concat((()=>{ const pr=passReasons(r), dc=deepCard(r), j=a=>(a||[]).join('; ');
+      return [pr.why, pr.close, dc&&dc.s, dc? dc.o : 'Not scored', dc&&dc.q, dc&&dc.f, dc&&dc.v, dc&&dc.m,
+              dc? j(dc.l) : '', dc? j((dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[])) : '']; })()).map(q).join(','));
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\ufeff'+head.join(',')+'\n'+body.join('\n')],{type:'text/csv'}));
   a.download=fileStem()+'.csv'; a.click();
@@ -3818,6 +3955,59 @@ const XP = (() => {
     note.alignment = { wrapText: true, vertical: 'top' };
     sum.getRow(sr).height = 18; sum.getRow(sr + 1).height = 18;
 
+    // ---- Why they passed: the screen's reasons next to the deep analysis scorecard
+    const why = wb.addWorksheet('Why they passed', { views: [{ state: 'frozen', xSplit: 2, ySplit: 5, showGridLines: false }],
+                                                    properties: { tabColor: { argb: A(GOLD) } } });
+    const wcols = [
+      ['sym', 'Ticker', 10], ['name', 'Company', 30], ['sector', 'GICS sector', 20],
+      ['passed', 'Screen', 14], ['why', 'Why it passed: its strongest figures', 52],
+      ['close', 'Closest call: its weakest figure against the bar', 40],
+      ['dScore', 'Deep score (of 100)', 10], ['dOp', 'Deep opinion', 12],
+      ['dQ', 'Quality', 8], ['dF', 'Financial strength', 9], ['dV', 'Valuation', 9], ['dM', 'Momentum', 9],
+      ['dLift', 'Lifting the score', 52], ['dDrag', 'Holding it back', 52],
+      ['mom', 'Momentum stage', 13], ['inv', 'Superinvestors holding', 11], ['link', 'Deep analysis', 12],
+    ];
+    why.columns = wcols.map(c => ({ width: c[2] }));
+    why.getCell('A1').value = 'Why these companies passed';
+    why.getCell('A1').font = font({ size: 16, bold: true, color: { argb: A(NAVY) } });
+    why.getCell('A2').value = 'Screen columns show where the figures of each company sit in the same spread the bars came from. ' + (D.deepNote || '');
+    why.getCell('A2').font = font({ size: 9, color: { argb: A(NAVY) } });
+    why.mergeCells(2, 1, 2, 10); why.getRow(2).height = 42;
+    why.getCell('A2').alignment = { wrapText: true, vertical: 'top' };
+    const wgroups = [['Company', 3], ['The screen', 3], ['Deep analysis scorecard', 8], ['Context', 3]];
+    let wc = 1;
+    for (const [g, n] of wgroups) {
+      if (n > 1) why.mergeCells(4, wc, 4, wc + n - 1);
+      const cell = why.getCell(4, wc); cell.value = g;
+      for (let c = wc; c < wc + n; c++) why.getCell(4, c).fill = fill(g === 'Deep analysis scorecard' ? GOLD : NAVY);
+      cell.font = font({ bold: true, color: { argb: A(WHITE) } }); cell.alignment = { horizontal: 'center' };
+      wc += n;
+    }
+    wcols.forEach((c, i) => {
+      const cell = why.getCell(5, i + 1); cell.value = c[1]; cell.fill = fill(NAVY2);
+      cell.font = font({ bold: true, size: 9, color: { argb: A(WHITE) } });
+      cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+    });
+    why.getRow(5).height = 32;
+    const opColor = { Buy: '1E7B34', Hold: 'BF8F00', Sell: 'B42318' };
+    let wr = 6;
+    for (const g of groups) for (const row of g.rows) {
+      wcols.forEach((c, j) => {
+        const cell = why.getCell(wr, j + 1);
+        const v = row[c[0]];
+        cell.value = (v === undefined || (typeof v === 'number' && Number.isNaN(v))) ? null : v;
+        if (c[0] === 'link') cell.value = v ? { text: 'Open', hyperlink: v } : null;
+        cell.font = font({ size: 9 });
+        cell.alignment = { wrapText: true, vertical: 'top', horizontal: typeof v === 'number' ? 'right' : 'left' };
+        cell.border = { bottom: hair };
+        if (typeof v === 'number') cell.numFmt = '0';
+        if (c[0] === 'dOp' && opColor[v]) cell.font = font({ size: 9, bold: true, color: { argb: A(opColor[v]) } });
+        if (c[0] === 'link' && v) cell.font = font({ size: 9, underline: true, color: { argb: A(NAVY2) } });
+      });
+      if ((wr - 6) % 2) for (let j = 1; j <= wcols.length; j++) why.getCell(wr, j).fill = fill(BAND);
+      wr++;
+    }
+
     // ---- Thresholds sheet
     const th = wb.addWorksheet('Thresholds', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4 }],
                                                properties: { tabColor: { argb: A(NAVY2) } } });
@@ -3852,7 +4042,7 @@ const XP = (() => {
     });
 
     // print setup: landscape, one page wide, header rows repeated on the results pages
-    for (const ws of [sum, res, th]) {
+    for (const ws of [sum, res, why, th]) {
       ws.pageSetup = { orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1,
                        fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5,
                                                   header: 0.2, footer: 0.2 } };
@@ -3975,7 +4165,43 @@ const XP = (() => {
         T(fmt.pct(r.roe), { align: 'right' })], i)));
       s2.addTable(hr, tableOpts([1.1, 3.9, 2.6, 1.45, 1.2, 0.9, 0.98], { y: yH + 0.42, fontSize: 10, rowH: 0.3 }));
     }
+    const tally = { Buy: 0, Hold: 0, Sell: 0 };
+    D.rows.forEach(r => { if (tally[r.dOp] !== undefined) tally[r.dOp]++; });
+    const scored = tally.Buy + tally.Hold + tally.Sell;
+    if (scored) s2.addText(`On the deep analysis scorecard: ${tally.Buy} Buy, ${tally.Hold} Hold, ${tally.Sell} Sell`
+      + (scored < D.rows.length ? ` (${D.rows.length - scored} not scored)` : ''),
+      { x: X0, y: 1.25, w: CW, h: 0.25, fontFace: BODY, fontSize: 11, color: NAVY, margin: 0, isTextBox: true });
     s2.addNotes(`Settings: ${m.region}; ${m.universe}; ${m.mode}; ${m.ruleBasis}`);
+
+    // 2b. the strongest names on the deep scorecard
+    // the strongest names, leaving out those whose figures look implausible or whose score
+    // rests on less than 80% of the expected figures; they stay in the sector tables
+    const ranked = D.rows.filter(r => num(r.dScore) !== null && !(r.checks || []).length && (r.dCov || 0) >= 80)
+      .sort((a, b) => b.dScore - a.dScore || (b.mcap || 0) - (a.mcap || 0));
+    const doubtful = D.rows.filter(r => (r.checks || []).length).length;
+    const OPC = { Buy: '1E7B34', Hold: GOLD, Sell: 'B42318' };
+    if (ranked.length) {
+      const top = ranked.slice(0, 10);
+      const sT = pres.addSlide({ masterName: 'CONTENT' });
+      sT.addText(`The ${top.length} strongest names on the deep analysis scorecard`, { placeholder: 'title' });
+      sT.addText('Each figure is scored against its own sector and rolled up into weighted pillars. Pillar scores are out of 100; 50 is the sector median.'
+        + (doubtful ? ` ${doubtful} name${doubtful === 1 ? '' : 's'} with implausible figures left out of this ranking.` : ''),
+        { x: X0, y: 1.3, w: CW, h: 0.3, fontFace: BODY, fontSize: 10.5, color: NAVY, margin: 0, isTextBox: true });
+      const tcT = [{ h: 'Ticker', a: 'left' }, { h: 'Company', a: 'left' }, { h: 'Sector', a: 'left' },
+        { h: 'Score' }, { h: 'Opinion', a: 'center' }, { h: 'Quality' }, { h: 'Strength' }, { h: 'Value' },
+        { h: 'Momentum' }, { h: 'Its strongest figure', a: 'left' }];
+      const rT = [head(tcT)];
+      top.forEach((r, i) => rT.push(zebra([
+        T(r.sym, { bold: true, color: NAVY, align: 'left', hyperlink: r.link ? { url: r.link } : undefined }),
+        T(r.name || '', { align: 'left' }), T(r.sector || '', { align: 'left' }),
+        T(fmt.int(r.dScore), { align: 'right', bold: true }),
+        T(r.dOp || '-', { align: 'center', bold: true, color: OPC[r.dOp] || NAVY2 }),
+        T(fmt.int(r.dQ), { align: 'right' }), T(fmt.int(r.dF), { align: 'right' }),
+        T(fmt.int(r.dV), { align: 'right' }), T(fmt.int(r.dM), { align: 'right' }),
+        T(r.whyList && r.whyList[0] ? r.whyList[0].txt + ', ' + r.whyList[0].where : '-', { align: 'left' })], i)));
+      sT.addTable(rT, tableOpts([0.85, 2.45, 1.75, 0.6, 0.8, 0.7, 0.75, 0.6, 0.85, 2.78],
+        { y: 1.75, fontSize: 9.5, rowH: 0.4 }));
+    }
 
     // 3. how names were selected
     const s3 = pres.addSlide({ masterName: 'CONTENT' });
@@ -4007,8 +4233,8 @@ const XP = (() => {
     const per = 12;
     const pages = groups.length === 1 ? 3 : 1;
     const tc = [{ h: 'Ticker', a: 'left' }, { h: 'Company', a: 'left' }, { h: 'Country', a: 'left' },
-      { h: 'Mkt cap $bn' }, { h: 'P/E' }, { h: 'ROE' }, { h: 'Op margin' }, { h: 'Net margin' },
-      { h: 'Momentum', a: 'left' }, { h: 'Piotroski' }, { h: 'Marquee', a: 'center' }];
+      { h: 'Mkt cap $bn' }, { h: 'P/E' }, { h: 'ROE' }, { h: 'Op margin' }, { h: 'Deep score' },
+      { h: 'Opinion', a: 'center' }, { h: 'Momentum', a: 'left' }, { h: 'Marquee', a: 'center' }];
     for (const g of groups) {
       for (let p = 0; p < pages; p++) {
         const chunk = g.rows.slice(p * per, (p + 1) * per);
@@ -4029,10 +4255,11 @@ const XP = (() => {
           T(r.name || '', { align: 'left' }), T(r.ctry || '', { align: 'left' }),
           T(fmt.bn(r.mcap), { align: 'right' }), T(fmt.x(r.pe), { align: 'right' }),
           T(fmt.pct(r.roe), { align: 'right' }), T(fmt.pct(r.om), { align: 'right' }),
-          T(fmt.pct(r.nm), { align: 'right' }), T(r.mom || '-', { align: 'left' }),
-          T(num(r.pf) === null ? '-' : String(Math.round(r.pf)) + '/9', { align: 'right' }),
+          T(fmt.int(r.dScore), { align: 'right', bold: true }),
+          T(r.dOp && r.dOp !== 'Not scored' ? r.dOp : '-', { align: 'center', bold: true, color: OPC[r.dOp] || NAVY2 }),
+          T(r.mom || '-', { align: 'left' }),
           T(r.mq ? 'Held' : '', { align: 'center', bold: true, color: GOLD })], i)));
-        s.addTable(rows, tableOpts([0.95, 2.8, 1.45, 1.0, 0.7, 0.75, 0.95, 0.95, 1.0, 0.8, 0.78],
+        s.addTable(rows, tableOpts([0.95, 2.75, 1.4, 0.95, 0.7, 0.75, 0.9, 0.85, 0.85, 1.05, 0.98],
           { y: 1.7, fontSize: 10, rowH: 0.36 }));
         const mqN = g.rows.filter(r => r.mq).length;
         s.addText(`Market cap in US dollars. Returns and margins are trailing twelve months. ` +
@@ -4040,6 +4267,110 @@ const XP = (() => {
           { x: X0, y: 6.55, w: CW, h: 0.3, fontFace: BODY, fontSize: 9.5, color: NAVY, margin: 0, isTextBox: true });
       }
     }
+
+    // company profiles: one page each for the strongest names on the deep scorecard
+    const PROFILES = 20;
+    const prof = ranked.slice(0, PROFILES);
+    if (prof.length) {
+      const sd = pres.addSlide({ masterName: 'COVER' });
+      sd.addText('Company profiles', { placeholder: 'title' });
+      sd.addText([
+        T(`The ${prof.length} strongest names on the deep analysis scorecard, one page each`, { breakLine: true, color: WHITE }),
+        T('Why each one passed the screen, what lifts its score, what holds it back, and how it compares with its sector median.', { fontSize: 13 }),
+      ], { placeholder: 'body' });
+    }
+    const RECT = (pres.shapes && pres.shapes.RECTANGLE) || (pres.ShapeType && pres.ShapeType.rect) || 'rect';
+    const sign = v => num(v) === null ? '-' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+    const bullets = (list, color) => list.length
+      ? list.map((t, i) => T(String(t).replace(/\.$/, '') + '.', { bullet: { indent: 12 }, breakLine: i < list.length - 1,
+          color: color || INK, paraSpaceAfter: 4 }))
+      : [T('Nothing stands out.', { color: NAVY2, italic: true })];
+    const heading = (sl, txt, x, y, w) => {
+      sl.addText(txt, { x, y, w, h: 0.3, fontFace: HEAD, fontSize: 13, color: NAVY, margin: 0, isTextBox: true });
+      sl.addShape(RECT, { x, y: y + 0.32, w: 0.6, h: 0.03, fill: { color: GOLD }, line: { color: GOLD } });
+    };
+    prof.forEach(r => {
+      const sl = pres.addSlide({ masterName: 'CONTENT' });
+      sl.addText(`${r.sym}   ${r.name || ''}`, { placeholder: 'title' });
+      if (r.link) sl.addText('Open the full deep analysis', { x: 9.9, y: 0.45, w: 2.83, h: 0.3, fontFace: BODY,
+        fontSize: 10, color: NAVY2, align: 'right', margin: 0, isTextBox: true, hyperlink: { url: r.link } });
+      const facts = [r.sector, r.ind, r.ctry, num(r.mcap) === null ? null : 'Market cap $' + fmt.bn(r.mcap) + 'bn',
+        num(r.px) === null ? null : 'Price ' + r.px.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' ' + (r.ccy || ''),
+        r.inv ? 'Held by ' + fmt.int(r.inv) + ' superinvestor' + (r.inv === 1 ? '' : 's') : null].filter(Boolean);
+      sl.addText(facts.join('   |   '), { x: X0, y: 1.3, w: CW, h: 0.28, fontFace: BODY, fontSize: 10.5,
+        color: NAVY, margin: 0, isTextBox: true });
+
+      // left: verdict and pillars
+      const xL = X0, wL = 3.55;
+      sl.addShape(RECT, { x: xL, y: 1.75, w: wL, h: 0.95, fill: { color: OPC[r.dOp] || NAVY2 }, line: { color: OPC[r.dOp] || NAVY2 } });
+      sl.addText([T(r.dOp || 'Not scored', { fontSize: 24, bold: true, color: WHITE, breakLine: true }),
+                  T(`Deep score ${fmt.int(r.dScore)} of 100`, { fontSize: 11, color: WHITE })],
+        { x: xL + 0.15, y: 1.75, w: wL - 0.3, h: 0.95, fontFace: BODY, valign: 'middle', margin: 0 });
+      const pill = [['Quality', r.dQ], ['Financial strength', r.dF], ['Valuation', r.dV], ['Momentum', r.dM], ['Signals', r.dG]]
+        .filter(([lab, v]) => lab !== 'Signals' || num(v) !== null);
+      pill.forEach(([lab, v], i) => {
+        const y = 2.9 + i * 0.4;
+        sl.addText(lab, { x: xL, y, w: 1.45, h: 0.3, fontFace: BODY, fontSize: 10, color: NAVY, margin: 0, valign: 'middle' });
+        sl.addShape(RECT, { x: xL + 1.5, y: y + 0.07, w: 1.6, h: 0.16, fill: { color: PALE }, line: { color: PALE } });
+        if (num(v) !== null) sl.addShape(RECT, { x: xL + 1.5, y: y + 0.07, w: Math.max(0.02, 1.6 * v / 100), h: 0.16,
+          fill: { color: v >= 65 ? NAVY : v >= 45 ? GOLD : 'B42318' }, line: { type: 'none' } });
+        sl.addText(num(v) === null ? 'n/a' : String(Math.round(v)), { x: xL + 3.15, y, w: 0.4, h: 0.3,
+          fontFace: BODY, fontSize: 10, bold: true, color: NAVY, align: 'right', margin: 0, valign: 'middle' });
+      });
+      sl.addText([T(r.passed || '', { breakLine: true }), T('Momentum stage: ' + (r.mom || 'n/a'))],
+        { x: xL, y: 4.95, w: wL, h: 0.45, fontFace: BODY, fontSize: 9.5, color: NAVY, margin: 0, valign: 'top' });
+
+      // middle: why it passed
+      const xM = 4.45, wM = 4.1;
+      heading(sl, 'Why it passed the screen', xM, 1.75, wM);
+      const wl = (r.whyList || []).map(x => x.txt + ', ' + x.where);
+      sl.addText(bullets(wl), { x: xM, y: 2.2, w: wM, h: 1.55, fontFace: BODY, fontSize: 10.5, color: INK, valign: 'top', margin: 0 });
+      heading(sl, 'Closest call', xM, 3.85, wM);
+      sl.addText(r.closeTxt ? r.closeTxt + '. The figure with the least room above its bar.' : '-',
+        { x: xM, y: 4.3, w: wM, h: 1.0, fontFace: BODY, fontSize: 10.5, color: INK, valign: 'top', margin: 0 });
+
+      // right: what the deep scorecard says
+      const xR = 8.8, wR = 3.93;
+      heading(sl, 'Lifting the score', xR, 1.75, wR);
+      sl.addText(bullets((r.dLifts || []).slice(0, 3)), { x: xR, y: 2.2, w: wR, h: 1.55, fontFace: BODY, fontSize: 10,
+        color: INK, valign: 'top', margin: 0 });
+      heading(sl, 'Holding it back', xR, 3.85, wR);
+      const hb = (r.checks || []).map(x => 'Check the data: ' + x).concat((r.dFlags || []).map(x => 'Red flag: ' + x), r.dDrags || []).slice(0, 3);
+      sl.addText(bullets(hb), { x: xR, y: 4.3, w: wR, h: 1.0, fontFace: BODY, fontSize: 10, color: INK, valign: 'top', margin: 0 });
+
+      // bottom: against the sector median, and recent performance
+      const md = r.med || {};
+      const mc = [['P/E', r.pe, md.pe, fmt.x], ['ROIC', r.roic, md.roic, fmt.pct], ['ROE', r.roe, md.roe, fmt.pct],
+        ['Gross margin', r.gm, md.gm, fmt.pct], ['Op margin', r.om, md.om, fmt.pct], ['FCF margin', r.fcfm, md.fcfm, fmt.pct],
+        ['Debt / equity', r.de, md.de, fmt.z], ['Altman Z', r.az, md.az, fmt.z]];
+      const KEYOF = { 'P/E': 'pe_max', ROIC: 'roic_min', ROE: 'roe_min', 'Gross margin': 'gross_margin_min',
+        'Op margin': 'op_margin_min', 'FCF margin': 'fcf_margin_min', 'Debt / equity': 'de_max', 'Altman Z': 'altman_min' };
+      const uk = r.useKeys || [];
+      let mcUse = mc.filter(c => uk.includes(KEYOF[c[0]]));
+      if (uk.includes('roa_min') && !uk.includes('roic_min')) mcUse.splice(2, 0, ['ROA', r.roa, md.roa, fmt.pct]);
+      if (uk.includes('net_margin_min') && !uk.includes('fcf_margin_min')) mcUse.push(['Net margin', r.nm, md.nm, fmt.pct]);
+      if (mcUse.length < 3) mcUse = mc;
+      mc.length = 0; mcUse.forEach(c => mc.push(c));
+      const cw = Math.min(1.2, 6.4 / mc.length);
+      const hdr = [T('Against its sector', { bold: true, color: WHITE, fill: { color: NAVY } })]
+        .concat(mc.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })));
+      const rowC = [T(r.sym, { bold: true, color: NAVY })].concat(mc.map(c => T(c[3](num(c[1])), { align: 'right', bold: true })));
+      const rowM = [T('Sector median', { color: NAVY })].concat(mc.map(c => T(c[3](num(c[2])), { align: 'right', color: NAVY })));
+      sl.addTable([hdr, rowC, zebra(rowM, 1)], tableOpts([1.4].concat(mc.map(() => cw)),
+        { x: X0, y: 5.6, fontSize: 9.5, rowH: 0.3 }));
+      sl.addText('Sector median among companies above $300M. For P/E, the median of the sector\'s quality peers (ROIC or ROE of 10% or more).',
+        { x: X0, y: 6.55, w: 7.8, h: 0.25, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true });
+      const pc = [['1 month', r.m1], ['3 months', r.m3], ['6 months', r.m6], ['YTD', r.ytd], ['1 year', r.y1]];
+      sl.addTable([pc.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })),
+        pc.map(c => T(sign(num(c[1])), { align: 'right', bold: true,
+          color: num(c[1]) === null ? NAVY2 : c[1] >= 0 ? '1E7B34' : 'B42318' }))],
+        tableOpts(pc.map(() => 0.78), { x: 8.83, y: 5.6, fontSize: 9.5, rowH: 0.3 }));
+      sl.addText('Price return, listing currency', { x: 8.83, y: 6.55, w: 3.9, h: 0.25, fontFace: BODY, fontSize: 8.5,
+        color: NAVY, margin: 0, isTextBox: true });
+      sl.addNotes(`Deep analysis scorecard from the snapshot figures (${num(r.dCov) === null ? '' : r.dCov + '% of expected figures available'}). `
+        + 'The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. '
+        + (r.link ? 'Full analysis: ' + r.link : ''));
+    });
 
     // last. notes
     const sN = pres.addSlide({ masterName: 'CONTENT' });
@@ -4049,6 +4380,7 @@ const XP = (() => {
       ['Sector mapping', 'TradingView sectors are folded into the eleven GICS sectors. REITs are moved from Finance to Real Estate by industry name.'],
       ['Figures', 'P/E, returns and margins are trailing twelve months unless stated. Current ratio and debt to equity are from the latest quarter. Market cap is in US dollars.'],
       ['Marquee held', 'Held by at least one superinvestor portfolio tracked by Dataroma. Ownership data lags the filing date.'],
+      ['Deep scorecard', 'Each figure is scored 0 to 100 against its own sector; five weighted pillars (quality 30, financial strength 20, valuation 25, momentum 15, signals 10) give the score. Buy from 70, Hold from 45. Red flags cap the opinion at Hold. Built from the snapshot figures; the full deep analysis page adds price history, cash quality and forensic checks.'],
       ['Use', 'A screen narrows the field for research. It is not a recommendation to buy or sell any security, and every name needs its own work before any decision.'],
     ];
     sN.addTable(notes.map((r, i) => zebra([T(r[0], { bold: true, color: NAVY, valign: 'top' }),
