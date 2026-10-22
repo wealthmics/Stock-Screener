@@ -2340,7 +2340,8 @@ DEEP_CARDS = {}               # 'TICKER|CCY' -> compact deep scorecard, for the 
 PRICE_CHARTS = True
 CHART_LOOKUP_BUDGET = 600         # seconds of symbol look-ups per run
 CHART_CACHE_PATH = None           # set in main() to <data dir>/yahoo_symbols.json
-CHARTS = {}                       # 'TICKER|CCY' -> {'d0': first week, 'w': weekly closes, 'c': ccy}
+CHARTS = {}                       # 'TICKER|CCY' -> {'d0': first week, 'w': weekly closes,
+                                  #                  'e50', 'e200': 50 and 200 day EMAs, weekly}
 _YH_CCY = {   # Yahoo venue code -> currency, for picking the right listing of a company
     'NMS': 'USD', 'NGM': 'USD', 'NCM': 'USD', 'NYQ': 'USD', 'ASE': 'USD', 'PCX': 'USD',
     'BTS': 'USD', 'PNK': 'USD', 'OTC': 'USD', 'EBS': 'CHF', 'GER': 'EUR', 'FRA': 'EUR',
@@ -2412,7 +2413,10 @@ def yahoo_symbol(entry, cache):
 
 
 def fetch_charts(stocks):
-    """Fill CHARTS with two years of weekly closes for the deep-feed names."""
+    """Fill CHARTS with two years of weekly closes, plus the 50 and 200 day EMAs, for the
+    deep-feed names. Three years of daily prices are fetched so both averages are fully
+    formed from the first week shown; they are computed on daily closes, the same way
+    TradingView does, and then sampled weekly to keep the page light."""
     CHARTS.clear()
     if not PRICE_CHARTS:
         return
@@ -2451,7 +2455,7 @@ def fetch_charts(stocks):
     for i in range(0, len(syms), 150):
         chunk = syms[i:i + 150]
         try:
-            df = yf.download(chunk, period='2y', interval='1wk', auto_adjust=True, progress=False,
+            df = yf.download(chunk, period='3y', interval='1d', auto_adjust=True, progress=False,
                              threads=True, group_by='ticker', multi_level_index=True)
         except Exception as e:
             print(f'      [WARN] price download failed for {len(chunk)} names: {e}')
@@ -2471,11 +2475,22 @@ def fetch_charts(stocks):
                 close = close.dropna()
             except Exception:
                 continue
-            if len(close) < 20:
+            if len(close) < 100:
                 continue
-            pts = [float(f'{float(v):.4g}') for v in close.values]
+            close.index = pd.to_datetime(close.index).tz_localize(None)
+            e50 = close.ewm(span=50, adjust=False).mean()
+            e200 = close.ewm(span=200, adjust=False).mean()
+            start = close.index[-1] - pd.Timedelta(days=730)
+            wk = lambda x: x[x.index >= start].resample('W-FRI').last().dropna()
+            wc, w50, w200 = wk(close), wk(e50), wk(e200)
+            if len(wc) < 20:
+                continue
+            sig = lambda xs: [float(f'{float(v):.4g}') for v in xs.reindex(wc.index).values]
+            item = {'d0': wc.index[0].strftime('%Y-%m-%d'), 'w': sig(wc), 'e50': sig(w50)}
+            if len(close) >= 400:          # a 200 day average needs history before the window
+                item['e200'] = sig(w200)
             for key in wanted[sym]:
-                CHARTS[key] = {'d0': close.index[0].strftime('%Y-%m-%d'), 'w': pts}
+                CHARTS[key] = item
     print(f'      price charts -> {len(CHARTS)} of {len(stocks)} names'
           f' ({looked} new symbol look-ups'
           + (f', {pending} left for the next run' if pending else '') + ')')
@@ -4224,33 +4239,54 @@ const XP = (() => {
   }
 
   // ================================================================ POWERPOINT =====
-  // two years of weekly closes as an SVG line chart, returned as a data URI
+  // two years of weekly closes with the 50 and 200 day EMAs, as an SVG data URI
+  const C50 = 'C8962E', C200 = '8A9BB8';
   function priceSvg(ch, color) {
-    const W = 960, H = 380, L = 70, R = 12, Tp = 14, B = 34;
-    const v = ch.w, n = v.length;
-    let lo = Math.min(...v), hi = Math.max(...v);
-    const pad = (hi - lo) * 0.06 || hi * 0.05 || 1; lo -= pad; hi += pad;
+    const W = 960, H = 400, L = 16, R = 92, Tp = 46, B = 36;
+    const v = ch.w, n = v.length, e50 = ch.e50 || null, e200 = ch.e200 || null;
+    const all = v.concat(e50 || [], e200 || []).filter(x => x !== null && !Number.isNaN(x));
+    let lo = Math.min(...all), hi = Math.max(...all);
+    const pad = (hi - lo) * 0.08 || hi * 0.05 || 1; lo -= pad; hi += pad;
     const X = i => L + (W - L - R) * i / (n - 1), Y = y => Tp + (H - Tp - B) * (1 - (y - lo) / (hi - lo));
     const f = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x >= 10 ? x.toFixed(1) : x.toFixed(2);
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const FONT = 'font-family="Calibri, Arial"';
     const d0 = new Date(ch.d0 + 'T00:00:00Z').getTime();
     let g = '';
+    // light horizontal guides, price labels on the right
     for (let k = 0; k <= 3; k++) {
-      const yv = lo + (hi - lo) * k / 3, y = Y(yv).toFixed(1);
-      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#E3E8F0" stroke-width="1.5"/>`
-        + `<text x="${L - 8}" y="${(+y + 7).toFixed(1)}" text-anchor="end" font-size="20" fill="#${NAVY}" font-family="Calibri, Arial">${f(yv)}</text>`;
+      const yv = lo + (hi - lo) * (k + 0.5) / 4, y = Y(yv).toFixed(1);
+      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#EEF1F6" stroke-width="1.5"/>`
+        + `<text x="${W - R + 10}" y="${(+y + 7).toFixed(1)}" font-size="19" fill="#7A869C" ${FONT}>${f(yv)}</text>`;
     }
-    const step = Math.max(1, Math.round((n - 1) / 6));
-    for (let i = 0; i < n; i += step) {
-      const d = new Date(d0 + i * 7 * 864e5);
-      g += `<text x="${X(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="20" fill="#${NAVY}" font-family="Calibri, Arial">${MON[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}</text>`;
+    g += `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#D8DEE9" stroke-width="1.5"/>`;
+    // a date label every four months, at the start of the month
+    let lastM = -1;
+    for (let i = 0; i < n; i++) {
+      const d = new Date(d0 + i * 7 * 864e5), m = d.getUTCMonth();
+      if (m !== lastM && m % 4 === 0 && i > 1 && i < n - 3)
+        g += `<text x="${X(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="19" fill="#7A869C" ${FONT}>${MON[m]} ${String(d.getUTCFullYear()).slice(2)}</text>`;
+      lastM = m;
     }
-    const pts = v.map((y, i) => X(i).toFixed(1) + ',' + Y(y).toFixed(1)).join(' ');
-    const area = `${X(0).toFixed(1)},${H - B} ${pts} ${X(n - 1).toFixed(1)},${H - B}`;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
-      + g + `<polygon points="${area}" fill="#${color}" fill-opacity="0.08"/>`
-      + `<polyline points="${pts}" fill="none" stroke="#${color}" stroke-width="3" stroke-linejoin="round"/>`
-      + `<circle cx="${X(n - 1).toFixed(1)}" cy="${Y(v[n - 1]).toFixed(1)}" r="5" fill="#${color}"/></svg>`;
+    const path = arr => arr.map((y, i) => (y === null || Number.isNaN(y)) ? null : X(i).toFixed(1) + ',' + Y(y).toFixed(1))
+      .filter(Boolean).join(' ');
+    const line = (arr, c, w, dash) => arr ? `<polyline points="${path(arr)}" fill="none" stroke="#${c}" stroke-width="${w}"`
+      + (dash ? ` stroke-dasharray="${dash}"` : '') + ` stroke-linejoin="round" stroke-linecap="round"/>` : '';
+    g += line(e200, C200, 2.5) + line(e50, C50, 2.5) + line(v, color, 3.2);
+    // last price, marked on the right edge
+    const ly = Y(v[n - 1]);
+    g += `<circle cx="${X(n - 1).toFixed(1)}" cy="${ly.toFixed(1)}" r="5" fill="#${color}"/>`
+      + `<rect x="${W - R + 4}" y="${(ly - 15).toFixed(1)}" width="${R - 6}" height="30" rx="4" fill="#${color}"/>`
+      + `<text x="${W - R + 10}" y="${(ly + 7).toFixed(1)}" font-size="19" font-weight="bold" fill="#FFFFFF" ${FONT}>${f(v[n - 1])}</text>`;
+    // legend
+    const key = [['Price', color], e50 ? ['50 day EMA', C50] : null, e200 ? ['200 day EMA', C200] : null].filter(Boolean);
+    let lx = L;
+    key.forEach(([t, c]) => {
+      g += `<line x1="${lx}" x2="${lx + 26}" y1="18" y2="18" stroke="#${c}" stroke-width="4" stroke-linecap="round"/>`
+        + `<text x="${lx + 34}" y="25" font-size="19" fill="#${NAVY}" ${FONT}>${t}</text>`;
+      lx += 34 + t.length * 10 + 30;
+    });
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${g}</svg>`;
     const b64 = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(svg))) : Buffer.from(svg).toString('base64');
     return 'data:image/svg+xml;base64,' + b64;
   }
@@ -4529,7 +4565,7 @@ const XP = (() => {
       sl.addText(bullets((r.whyList || []).map(x => x.txt + ', ' + x.where)),
         { x: xM, y: 2.1, w: wM, h: 1.05, fontFace: BODY, fontSize: 9.5, color: INK, valign: 'top', margin: 0 });
       heading(sl, 'Closest call', xM, 3.2);
-      sl.addText((r.closeTxt ? r.closeTxt + '. The figure with the least room above its bar. ' : '') + (r.passed || ''),
+      sl.addText((r.closeTxt ? r.closeTxt + '. The figure with the least room above its bar. ' : '') + (r.passed ? r.passed + '.' : ''),
         { x: xM, y: 3.6, w: wM, h: 0.75, fontFace: BODY, fontSize: 9.5, color: INK, valign: 'top', margin: 0 });
 
       // top right: what the deep scorecard says
@@ -4578,8 +4614,13 @@ const XP = (() => {
         const first = ch.w[0], last = ch.w[ch.w.length - 1], chg = (last / first - 1) * 100;
         // drawn as a small vector image rather than a native chart: a native chart embeds a
         // spreadsheet in every slide, which made a full deck tens of megabytes
-        sl.addImage({ data: priceSvg(ch, chg >= 0 ? NAVY : 'B42318'), x: xC, y: 5.0, w: wC, h: 1.75 });
-        sl.addText(`${sign(chg)} over the period, weekly close in ${r.ccy || 'the listing currency'}`,
+        sl.addImage({ data: priceSvg(ch, NAVY), x: xC, y: 4.98, w: wC, h: 1.78 });
+        const tr = (ch.e50 && ch.e200) ? (() => { const a = ch.e50[ch.e50.length - 1], b = ch.e200[ch.e200.length - 1], p = ch.w[ch.w.length - 1];
+            return p > a && a > b ? '  |  above both averages, 50 day over 200 day'
+                 : p < a && a < b ? '  |  below both averages, 50 day under 200 day'
+                 : a > b ? '  |  50 day above 200 day' : '  |  50 day below 200 day'; })() : '';
+        sl.addText([T(sign(chg), { bold: true, color: chg >= 0 ? '1E7B34' : 'B42318' }),
+                    T(` over two years${tr}  |  weekly close, ${r.ccy || 'listing currency'}`, { color: NAVY })],
           { x: xC, y: 6.78, w: wC, h: 0.2, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true });
       } else {
         sl.addShape(RECT, { x: xC, y: 5.0, w: wC, h: 1.7, fill: { color: BAND }, line: { color: LINE } });
