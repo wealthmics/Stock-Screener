@@ -1,0 +1,55 @@
+# Adds the platform guide to the screener website after every nightly build.
+# A new workflow: build-screener.yml is not touched. It runs add_guide.py, which writes
+# guide.html and guide.md and puts a Guide button in index.html, then commits them.
+name: Add guide
+
+on:
+  workflow_run:
+    workflows: ["Build screener"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: [add_guide.py]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: add-guide
+  cancel-in-progress: false
+
+jobs:
+  guide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Write the guide and add the header button
+        run: python add_guide.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html guide.html guide.md
+          if git diff --cached --quiet; then
+            echo "Guide already up to date."
+            exit 0
+          fi
+          git commit -m "Add the platform guide"
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Could not push after 3 attempts."
+          exit 1
