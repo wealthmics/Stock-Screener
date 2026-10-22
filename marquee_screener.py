@@ -2330,172 +2330,6 @@ def _clean_number(value):
 
 DEEP_CARDS = {}               # 'TICKER|CCY' -> compact deep scorecard, for the web page export
 
-# ---- two-year price charts for the PowerPoint profiles ------------------------------
-# Weekly closes for every name in the deep feed, fetched from Yahoo at build time. Yahoo
-# needs its own symbol (2330.TW, not 2330), so each name is looked up once by ISIN, or by
-# ticker and name when there is no ISIN, and the answer is kept in data/yahoo_symbols.json,
-# which the workflow commits. Look-ups stop after CHART_LOOKUP_BUDGET seconds so the build
-# never runs long; whatever is left is picked up on the next run. Nothing here can fail the
-# build: a name without history simply gets no chart.
-PRICE_CHARTS = True
-CHART_LOOKUP_BUDGET = 600         # seconds of symbol look-ups per run
-CHART_CACHE_PATH = None           # set in main() to <data dir>/yahoo_symbols.json
-CHARTS = {}                       # 'TICKER|CCY' -> {'d0': first week, 'w': weekly closes,
-                                  #                  'e50', 'e200': 50 and 200 day EMAs, weekly}
-_YH_CCY = {   # Yahoo venue code -> currency, for picking the right listing of a company
-    'NMS': 'USD', 'NGM': 'USD', 'NCM': 'USD', 'NYQ': 'USD', 'ASE': 'USD', 'PCX': 'USD',
-    'BTS': 'USD', 'PNK': 'USD', 'OTC': 'USD', 'EBS': 'CHF', 'GER': 'EUR', 'FRA': 'EUR',
-    'PAR': 'EUR', 'AMS': 'EUR', 'BRU': 'EUR', 'MIL': 'EUR', 'MCE': 'EUR', 'LIS': 'EUR',
-    'VIE': 'EUR', 'DUB': 'EUR', 'HEL': 'EUR', 'ATH': 'EUR', 'LSE': 'GBP', 'STO': 'SEK',
-    'CPH': 'DKK', 'OSL': 'NOK', 'TOR': 'CAD', 'VAN': 'CAD', 'CNQ': 'CAD', 'JPX': 'JPY',
-    'HKG': 'HKD', 'TAI': 'TWD', 'TWO': 'TWD', 'KSC': 'KRW', 'KOE': 'KRW', 'NSI': 'INR',
-    'BSE': 'INR', 'SES': 'SGD', 'KLS': 'MYR', 'JKT': 'IDR', 'SET': 'THB', 'PHS': 'PHP',
-    'HSX': 'VND', 'SHH': 'CNY', 'SHZ': 'CNY', 'ASX': 'AUD', 'NZE': 'NZD', 'SAO': 'BRL',
-    'MEX': 'MXN', 'SGO': 'CLP', 'LIM': 'PEN', 'JNB': 'ZAR', 'TLV': 'ILS', 'IST': 'TRY',
-    'WSE': 'PLN', 'SAU': 'SAR', 'DOH': 'QAR', 'PRA': 'CZK', 'BUD': 'HUF', 'CAI': 'EGP',
-}
-
-
-def _yahoo_search(query):
-    import requests
-    try:
-        r = requests.get('https://query2.finance.yahoo.com/v1/finance/search',
-                         params={'q': query, 'quotesCount': 8, 'newsCount': 0}, timeout=10,
-                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'})
-        r.raise_for_status()
-        return [q for q in (r.json().get('quotes') or [])
-                if str(q.get('quoteType', '')).upper() in ('EQUITY', 'ETF') and q.get('symbol')]
-    except Exception:
-        return None          # a failed request, as opposed to no results
-
-
-def _pick_listing(quotes, ticker, ccy):
-    """The quote in the expected currency, preferring the same ticker; None if none fits."""
-    quotes = quotes or []
-    want = {'GBX': 'GBP', 'ZAC': 'ZAR', 'ILA': 'ILS'}.get(ccy, ccy)
-    base = lambda x: (re.sub(r'[^A-Z0-9]', '', str(x).upper().split('.')[0]).lstrip('0') or '0')
-    in_ccy = [q for q in quotes if (q.get('currency') or _YH_CCY.get(str(q.get('exchange', '')).upper())) == want]
-    same = [q for q in in_ccy if base(q['symbol']) == base(ticker)]
-    return (same or in_ccy or [None])[0]
-
-
-def yahoo_symbol(entry, cache):
-    """Yahoo symbol for one deep-feed entry, from the cache or a fresh look-up. Returns
-    (symbol or None, looked_up)."""
-    ticker = str(entry.get('ticker') or '').strip().upper()
-    ccy = str(entry.get('ccy') or '').upper()
-    isin = entry.get('isin') or ''
-    key = isin or f'TV:{ticker}:{ccy}'
-    if cache.get(key):
-        return cache[key], False
-    failed = cache.setdefault('_not_found', {})
-    if key in failed and (datetime.date.today() - datetime.date.fromisoformat(failed[key])).days < 14:
-        return None, False                       # tried recently, try again in two weeks
-    if ccy == 'USD' and re.fullmatch(r'[A-Z]{1,5}([._/][A-Z])?', ticker):
-        sym = re.sub(r'[._/]', '-', ticker)
-        cache[key] = sym
-        return sym, False
-    q, errored = None, False
-    for query in ([isin] if isin else []) + [ticker] + ([entry['name']] if entry.get('name') else []):
-        res = _yahoo_search(query)
-        errored = errored or res is None
-        q = _pick_listing(res, ticker, ccy)
-        if q:
-            break
-    if q:
-        cache[key] = q['symbol']
-        failed.pop(key, None)
-        return q['symbol'], True
-    if not errored:                              # a real "not found", not a network blip
-        failed[key] = datetime.date.today().isoformat()
-    return None, True
-
-
-def fetch_charts(stocks):
-    """Fill CHARTS with two years of weekly closes, plus the 50 and 200 day EMAs, for the
-    deep-feed names. Three years of daily prices are fetched so both averages are fully
-    formed from the first week shown; they are computed on daily closes, the same way
-    TradingView does, and then sampled weekly to keep the page light."""
-    CHARTS.clear()
-    if not PRICE_CHARTS:
-        return
-    try:
-        import yfinance as yf
-    except Exception:
-        print('      [WARN] yfinance is not installed, so the PowerPoint profiles get no price charts')
-        return
-    cache = {}
-    if CHART_CACHE_PATH and os.path.exists(CHART_CACHE_PATH):
-        try:
-            with open(CHART_CACHE_PATH) as fh:
-                cache = json.load(fh)
-        except Exception:
-            cache = {}
-    t0, looked, pending, wanted = time.time(), 0, 0, {}
-    for e in stocks.values():
-        key = f"{e.get('ticker')}|{(e.get('ccy') or '').upper()}"
-        k = e.get('isin') or f"TV:{str(e.get('ticker') or '').upper()}:{(e.get('ccy') or '').upper()}"
-        if not cache.get(k) and time.time() - t0 > CHART_LOOKUP_BUDGET:
-            pending += 1
-            continue
-        sym, fresh = yahoo_symbol(e, cache)
-        if fresh:
-            looked += 1
-            time.sleep(0.15)
-        if sym:
-            wanted.setdefault(sym, []).append(key)
-    if CHART_CACHE_PATH:
-        try:
-            with open(CHART_CACHE_PATH, 'w') as fh:
-                json.dump(cache, fh, indent=0, sort_keys=True)
-        except Exception as e:
-            print(f'      [WARN] could not save the Yahoo symbol cache: {e}')
-    syms = sorted(wanted)
-    for i in range(0, len(syms), 150):
-        chunk = syms[i:i + 150]
-        try:
-            df = yf.download(chunk, period='3y', interval='1d', auto_adjust=True, progress=False,
-                             threads=True, group_by='ticker', multi_level_index=True)
-        except Exception as e:
-            print(f'      [WARN] price download failed for {len(chunk)} names: {e}')
-            continue
-        for sym in chunk:
-            try:
-                cols = df.columns
-                if isinstance(cols, pd.MultiIndex):
-                    if sym in cols.get_level_values(0):
-                        close = df[sym]['Close']
-                    else:
-                        close = df['Close'][sym]
-                else:
-                    close = df['Close']
-                if hasattr(close, 'columns'):
-                    close = close.iloc[:, 0]
-                close = close.dropna()
-            except Exception:
-                continue
-            if len(close) < 100:
-                continue
-            close.index = pd.to_datetime(close.index).tz_localize(None)
-            e50 = close.ewm(span=50, adjust=False).mean()
-            e200 = close.ewm(span=200, adjust=False).mean()
-            start = close.index[-1] - pd.Timedelta(days=730)
-            wk = lambda x: x[x.index >= start].resample('W-FRI').last().dropna()
-            wc, w50, w200 = wk(close), wk(e50), wk(e200)
-            if len(wc) < 20:
-                continue
-            sig = lambda xs: [float(f'{float(v):.4g}') for v in xs.reindex(wc.index).values]
-            item = {'d0': wc.index[0].strftime('%Y-%m-%d'), 'w': sig(wc), 'e50': sig(w50)}
-            if len(close) >= 400:          # a 200 day average needs history before the window
-                item['e200'] = sig(w200)
-            for key in wanted[sym]:
-                CHARTS[key] = item
-    print(f'      price charts -> {len(CHARTS)} of {len(stocks)} names'
-          f' ({looked} new symbol look-ups'
-          + (f', {pending} left for the next run' if pending else '') + ')')
-
-
 def load_deep_scoring():
     """The deep app's scoring module, or None."""
     import importlib.util, types, urllib.request
@@ -2637,10 +2471,6 @@ def write_deep_feed(all_rows, screened_symbols, out_dir, publish_dir, stamp):
         stocks[key] = entry
 
     build_deep_cards(stocks, stats)
-    try:
-        fetch_charts(stocks)
-    except Exception as e:
-        print(f'      [WARN] price charts skipped: {e}')
     feed = {'as_of': stamp['data'], 'marquee_as_of': stamp['marquee'],
             'built': stamp['built'], 'source': 'TradingView screener export',
             'periods': DEEP_FEED_PERIODS, 'count': len(stocks), 'stocks': stocks}
@@ -2736,7 +2566,6 @@ def build_html(a2, out_path, stamp, split=False):
         'fixedBy': fixed_rules(),
         'marketDist': MARKET_DIST,
         'deep': DEEP_CARDS,
-        'charts': CHARTS,
         'ruleSets': SECTOR_RULES,
         'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
         'notUsedWhy': not_used_why(),
@@ -3712,7 +3541,7 @@ function exportData(){
         dV:dc? dc.v : null, dM:dc? dc.m : null, dG:dc? dc.g : null, dCov:dc? dc.c : null,
         dLifts:dc? (dc.l||[]) : [], dDrags:dc? (dc.d||[]) : [], dFlags:dc? (dc.x||[]) : [],
         whyList:pr.list, closeTxt:pr.close, med:sectorMedians(r), link:deepLink(r), checks:dataChecks(r),
-        chart:(DATA.charts||{})[(r[IX.sym]||'')+'|'+String(r[IX.ccy]||'').toUpperCase()]||null,
+        e50:r[IX.e50], e200:r[IX.e200], rsi:r[IX.rsi],
         useKeys:ruleSetFor((r[IX.gics]===null||r[IX.gics]===undefined)? DATA.allLabel : SEC[r[IX.gics]]),
         dLift:dc? join(dc.l) : '', dDrag:join(dataChecks(r).map(x=>'Check the data: '+x).concat(dc? (dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[]) : [])) }; })()}));
   return {deepNote: 'Deep analysis scorecard from the snapshot figures: each figure scored against its sector, five weighted pillars, Buy from 70, Hold from 45. The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. Names outside the deep feed are marked Not scored.', rows, meta:{
@@ -4239,58 +4068,6 @@ const XP = (() => {
   }
 
   // ================================================================ POWERPOINT =====
-  // two years of weekly closes with the 50 and 200 day EMAs, as an SVG data URI
-  const C50 = 'C8962E', C200 = '8A9BB8';
-  function priceSvg(ch, color) {
-    const W = 960, H = 400, L = 16, R = 92, Tp = 46, B = 36;
-    const v = ch.w, n = v.length, e50 = ch.e50 || null, e200 = ch.e200 || null;
-    const all = v.concat(e50 || [], e200 || []).filter(x => x !== null && !Number.isNaN(x));
-    let lo = Math.min(...all), hi = Math.max(...all);
-    const pad = (hi - lo) * 0.08 || hi * 0.05 || 1; lo -= pad; hi += pad;
-    const X = i => L + (W - L - R) * i / (n - 1), Y = y => Tp + (H - Tp - B) * (1 - (y - lo) / (hi - lo));
-    const f = x => x >= 1000 ? Math.round(x).toLocaleString('en-US') : x >= 10 ? x.toFixed(1) : x.toFixed(2);
-    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const FONT = 'font-family="Calibri, Arial"';
-    const d0 = new Date(ch.d0 + 'T00:00:00Z').getTime();
-    let g = '';
-    // light horizontal guides, price labels on the right
-    for (let k = 0; k <= 3; k++) {
-      const yv = lo + (hi - lo) * (k + 0.5) / 4, y = Y(yv).toFixed(1);
-      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#EEF1F6" stroke-width="1.5"/>`
-        + `<text x="${W - R + 10}" y="${(+y + 7).toFixed(1)}" font-size="19" fill="#7A869C" ${FONT}>${f(yv)}</text>`;
-    }
-    g += `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#D8DEE9" stroke-width="1.5"/>`;
-    // a date label every four months, at the start of the month
-    let lastM = -1;
-    for (let i = 0; i < n; i++) {
-      const d = new Date(d0 + i * 7 * 864e5), m = d.getUTCMonth();
-      if (m !== lastM && m % 4 === 0 && i > 1 && i < n - 3)
-        g += `<text x="${X(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="19" fill="#7A869C" ${FONT}>${MON[m]} ${String(d.getUTCFullYear()).slice(2)}</text>`;
-      lastM = m;
-    }
-    const path = arr => arr.map((y, i) => (y === null || Number.isNaN(y)) ? null : X(i).toFixed(1) + ',' + Y(y).toFixed(1))
-      .filter(Boolean).join(' ');
-    const line = (arr, c, w, dash) => arr ? `<polyline points="${path(arr)}" fill="none" stroke="#${c}" stroke-width="${w}"`
-      + (dash ? ` stroke-dasharray="${dash}"` : '') + ` stroke-linejoin="round" stroke-linecap="round"/>` : '';
-    g += line(e200, C200, 2.5) + line(e50, C50, 2.5) + line(v, color, 3.2);
-    // last price, marked on the right edge
-    const ly = Y(v[n - 1]);
-    g += `<circle cx="${X(n - 1).toFixed(1)}" cy="${ly.toFixed(1)}" r="5" fill="#${color}"/>`
-      + `<rect x="${W - R + 4}" y="${(ly - 15).toFixed(1)}" width="${R - 6}" height="30" rx="4" fill="#${color}"/>`
-      + `<text x="${W - R + 10}" y="${(ly + 7).toFixed(1)}" font-size="19" font-weight="bold" fill="#FFFFFF" ${FONT}>${f(v[n - 1])}</text>`;
-    // legend
-    const key = [['Price', color], e50 ? ['50 day EMA', C50] : null, e200 ? ['200 day EMA', C200] : null].filter(Boolean);
-    let lx = L;
-    key.forEach(([t, c]) => {
-      g += `<line x1="${lx}" x2="${lx + 26}" y1="18" y2="18" stroke="#${c}" stroke-width="4" stroke-linecap="round"/>`
-        + `<text x="${lx + 34}" y="25" font-size="19" fill="#${NAVY}" ${FONT}>${t}</text>`;
-      lx += 34 + t.length * 10 + 30;
-    });
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${g}</svg>`;
-    const b64 = typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(svg))) : Buffer.from(svg).toString('base64');
-    return 'data:image/svg+xml;base64,' + b64;
-  }
-
   function deck(PptxGenJS, D) {
     const pres = new PptxGenJS();
     pres.layout = 'LAYOUT_WIDE';            // 13.33 x 7.5 in
@@ -4516,7 +4293,7 @@ const XP = (() => {
       sd.addText('Company profiles', { placeholder: 'title' });
       sd.addText([
         T(`One page for each of the ${prof.length.toLocaleString('en-US')} companies, by sector, strongest deep score first`, { breakLine: true, color: WHITE }),
-        T('Why each one passed the screen, what lifts its score, what holds it back, how it compares with its sector median, and two years of price.', { fontSize: 13 }),
+        T('Why each one passed the screen, what lifts its score, what holds it back, how it compares with its sector median, and where the price stands.', { fontSize: 13 }),
       ], { placeholder: 'body' });
     }
     const RECT = (pres.shapes && pres.shapes.RECTANGLE) || (pres.ShapeType && pres.ShapeType.rect) || 'rect';
@@ -4598,35 +4375,26 @@ const XP = (() => {
         { x: X0, y: 4.7, fontSize: 9, rowH: 0.3 }));
       sl.addText('Sector median among companies above $300M. For P/E, the median of the sector\'s quality peers (ROIC or ROE of 10% or more).',
         { x: X0, y: 5.68, w: 7.1, h: 0.4, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true, valign: 'top' });
-      const pc = [['1M', r.m1], ['3M', r.m3], ['6M', r.m6], ['YTD', r.ytd], ['1Y', r.y1]];
-      sl.addText([T('Price return   ', { bold: true, color: NAVY })].concat(pc.flatMap(([lab, v], i) => [
-          T(lab + ' ', { color: NAVY }),
-          T(sign(num(v)) + (i < pc.length - 1 ? '     ' : ''), { bold: true, color: num(v) === null ? NAVY2 : v >= 0 ? '1E7B34' : 'B42318' })])),
-        { x: X0, y: 6.2, w: 7.1, h: 0.3, fontFace: BODY, fontSize: 10, margin: 0, isTextBox: true });
-      sl.addText('Momentum stage: ' + (r.mom || 'n/a'), { x: X0, y: 6.5, w: 7.1, h: 0.25, fontFace: BODY, fontSize: 9.5,
-        color: NAVY, margin: 0, isTextBox: true });
-
-      // bottom right: two years of weekly closes
+      // bottom right: recent price performance and where the price sits against its averages
       const xC = 7.95, wC = 4.78;
-      heading(sl, 'Two years of price', xC, 4.6);
-      const ch = r.chart;
-      if (ch && ch.w && ch.w.length >= 20) {
-        const first = ch.w[0], last = ch.w[ch.w.length - 1], chg = (last / first - 1) * 100;
-        // drawn as a small vector image rather than a native chart: a native chart embeds a
-        // spreadsheet in every slide, which made a full deck tens of megabytes
-        sl.addImage({ data: priceSvg(ch, NAVY), x: xC, y: 4.98, w: wC, h: 1.78 });
-        const tr = (ch.e50 && ch.e200) ? (() => { const a = ch.e50[ch.e50.length - 1], b = ch.e200[ch.e200.length - 1], p = ch.w[ch.w.length - 1];
-            return p > a && a > b ? '  |  above both averages, 50 day over 200 day'
-                 : p < a && a < b ? '  |  below both averages, 50 day under 200 day'
-                 : a > b ? '  |  50 day above 200 day' : '  |  50 day below 200 day'; })() : '';
-        sl.addText([T(sign(chg), { bold: true, color: chg >= 0 ? '1E7B34' : 'B42318' }),
-                    T(` over two years${tr}  |  weekly close, ${r.ccy || 'listing currency'}`, { color: NAVY })],
-          { x: xC, y: 6.78, w: wC, h: 0.2, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true });
-      } else {
-        sl.addShape(RECT, { x: xC, y: 5.0, w: wC, h: 1.7, fill: { color: BAND }, line: { color: LINE } });
-        sl.addText('Price history not available yet for this listing. It is fetched on each nightly build, so it usually appears within a run or two.',
-          { x: xC + 0.2, y: 5.0, w: wC - 0.4, h: 1.7, fontFace: BODY, fontSize: 9.5, color: NAVY, align: 'center', valign: 'middle', margin: 0 });
-      }
+      heading(sl, 'Price and trend', xC, 4.6);
+      const pr = [['1 month', r.m1], ['3 months', r.m3], ['6 months', r.m6], ['YTD', r.ytd], ['1 year', r.y1]];
+      sl.addTable([pr.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })),
+        pr.map(c => T(sign(num(c[1])), { align: 'right', bold: true,
+          color: num(c[1]) === null ? NAVY2 : c[1] >= 0 ? '1E7B34' : 'B42318' }))],
+        tableOpts(pr.map(() => wC / 5), { x: xC, y: 5.0, fontSize: 9.5, rowH: 0.3 }));
+      const vs = (a, b) => num(a) === null || num(b) === null || !b ? null : (a / b - 1) * 100;
+      const p50 = vs(r.px, r.e50), p200 = vs(r.px, r.e200);
+      const lines = [];
+      if (p50 !== null) lines.push([`Price vs 50 day EMA`, sign(p50), p50]);
+      if (p200 !== null) lines.push([`Price vs 200 day EMA`, sign(p200), p200]);
+      if (num(r.e50) !== null && num(r.e200) !== null)
+        lines.push(['50 day vs 200 day', r.e50 > r.e200 ? 'above' : 'below', r.e50 > r.e200 ? 1 : -1]);
+      if (num(r.rsi) !== null) lines.push(['RSI (14 day)', r.rsi.toFixed(0), r.rsi > 70 ? -1 : r.rsi < 30 ? -1 : 0]);
+      lines.push(['Momentum stage', r.mom || 'n/a', 0]);
+      sl.addTable(lines.map((l, i) => zebra([T(l[0], { color: NAVY }),
+          T(l[1], { align: 'right', bold: true, color: l[2] > 0 ? '1E7B34' : l[2] < 0 ? 'B42318' : INK })], i)),
+        tableOpts([wC - 1.3, 1.3], { x: xC, y: 5.72, fontSize: 9, rowH: 0.21 }));
       sl.addNotes(`Deep analysis scorecard from the snapshot figures${num(r.dCov) === null ? '' : ' (' + r.dCov + '% of expected figures available)'}. `
         + 'The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. '
         + (r.link ? 'Full analysis: ' + r.link : ''));
@@ -4765,8 +4533,7 @@ def main():
 
     # command line beats the constants at the top, which is how the CI workflow drives
     # this script without editing the file
-    global SCRAPE_DATAROMA, PUBLISH_DIR, GITHUB_UPLOAD, DATE_IN_FILENAME, CHART_CACHE_PATH
-    CHART_CACHE_PATH = os.path.join(args.data_dir, 'yahoo_symbols.json')
+    global SCRAPE_DATAROMA, PUBLISH_DIR, GITHUB_UPLOAD, DATE_IN_FILENAME
     if args.scrape:
         SCRAPE_DATAROMA = args.scrape
     if args.publish_dir is not None:
