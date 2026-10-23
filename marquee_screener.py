@@ -151,6 +151,7 @@ DATAROMA_PAGES = 15
 # other CSV recognised as a Dataroma export, is deleted once the newest one is chosen, so the
 # folder never fills up. The workflow commits the deletion along with everything else.
 KEEP_ONLY_LATEST_DATAROMA = True        # the scraper stops early on its own if a page comes back empty
+KEEP_ONLY_LATEST_UNIVERSE = True        # delete older TradingView exports once the newest one has loaded
 
 # Which threshold set to run.
 #   'base'   one set of bars for every sector: the median company of the whole market,
@@ -1509,6 +1510,28 @@ def load_marquee(path):
 
 
 # ------------------------------------------------------------------ dataroma scrape ---
+def prune_old_universe(data_dir, keep):
+    """Delete every older TradingView export once the newest one has loaded cleanly. Each
+    export is around 18 MB, so keeping them would make the repo grow fast."""
+    if not KEEP_ONLY_LATEST_UNIVERSE or not keep:
+        return
+    keep = os.path.abspath(keep)
+    gone = []
+    for path in glob.glob(os.path.join(data_dir, '*.csv')):
+        if os.path.abspath(path) == keep or classify(path) != 'universe':
+            continue
+        if file_rank(path) > file_rank(keep):      # never delete something newer than what was used
+            continue
+        try:
+            os.remove(path)
+            gone.append(os.path.basename(path))
+        except OSError as e:
+            print(f'      [WARN] could not delete {os.path.basename(path)}: {e}')
+    if gone:
+        print(f'      removed {len(gone)} older TradingView export(s) {gone}, keeping only '
+              f'{os.path.basename(keep)}')
+
+
 def prune_old_marquee(data_dir, keep):
     """Delete every Dataroma file except the one in use."""
     if not KEEP_ONLY_LATEST_DATAROMA or not keep:
@@ -4582,6 +4605,7 @@ def main():
     a = load_universe(p_all, feed_dirs=[PUBLISH_DIR, args.out_dir])
     d = load_marquee(p_dr)
     print(f'[2/6] loaded {len(a)} universe rows, {len(d)} unique marquee rows')
+    prune_old_universe(args.data_dir, p_all)       # only after the newest one loaded cleanly
 
     merged = match_marquee(a, d)
     matched = merged[merged['Matched Symbol'].notna()].copy()
