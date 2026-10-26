@@ -847,6 +847,41 @@ SECTOR_RULES = {
                                 'net_margin_min', 'de_max', 'int_cov_min', 'piotroski_min',
                                 'mcap_min'],
 }
+# ---- industries -------------------------------------------------------------------
+# Each company is also judged against its own TradingView industry. Every industry sits
+# inside one GICS sector. Small industries borrow strength from their sector: each bar
+# blends the industry's own spread with the sector's, weighted n / (n + SHRINK_K) toward
+# the industry, so Semiconductors (459 companies) is ~94% its own median while Specialty
+# insurance (17) leans mostly on Financials. No cliff edge at any size.
+SHRINK_K = 30
+
+# Industries whose business model needs a different rule set from their GICS sector.
+_BANK_LIKE = ['pe_max', 'roe_min', 'roa_min', 'op_margin_min', 'net_margin_min', 'mcap_min']
+INDUSTRY_RULES = {
+    'Regional banks': _BANK_LIKE, 'Major banks': _BANK_LIKE, 'Savings banks': _BANK_LIKE,
+    'Multi-line insurance': _BANK_LIKE, 'Property/Casualty insurance': _BANK_LIKE,
+    'Life/Health insurance': _BANK_LIKE, 'Specialty insurance': _BANK_LIKE,
+    'Investment banks/Brokers': _BANK_LIKE, 'Financial conglomerates': _BANK_LIKE,
+    'Finance/Rental/Leasing': _BANK_LIKE,
+    # fee businesses: no loan book or float, so cash flow and debt mean what they usually do
+    'Investment managers': [k for k in ['pe_max', 'roic_min', 'roe_min', 'roa_min', 'op_margin_min',
+                            'fcf_margin_min', 'net_margin_min', 'de_max', 'int_cov_min',
+                            'current_ratio_min', 'altman_min', 'piotroski_min', 'mcap_min']],
+    'Insurance brokers/Services': ['pe_max', 'roic_min', 'roe_min', 'roa_min', 'op_margin_min',
+                                   'fcf_margin_min', 'net_margin_min', 'de_max', 'int_cov_min',
+                                   'current_ratio_min', 'altman_min', 'piotroski_min', 'mcap_min'],
+    # developers carry land and pre-sales, so short-term liquidity matters for them
+    'Real estate development': ['pe_max', 'roe_min', 'roa_min', 'gross_margin_min', 'op_margin_min',
+                                'net_margin_min', 'current_ratio_min', 'de_max', 'int_cov_min', 'mcap_min'],
+}
+# Industries left out of the screen altogether, with the reason shown on the page.
+EXCLUDED_INDUSTRIES = {
+    'Investment trusts': 'These are investment funds. Their earnings are mostly gains on the '
+                         'portfolio, so business-quality measures do not describe them.',
+}
+# A company only passes if these are reported; 'a|b' means whichever of the two its rules use.
+REQUIRED_RULES = ['pe_max', 'op_margin_min', 'roic_min|roe_min']
+
 # Per rule shifts of the percentile, in points. Earnings in energy, materials and property
 # swing with the cycle, so a low P/E at the top of the cycle misleads: their P/E bar sits at
 # the 60th percentile of quality peers instead of the median.
@@ -1003,6 +1038,67 @@ def compute_tuned(universe):
         block.update(TUNED_OVERRIDES.get(sector, {}))
         COMPUTED_TUNED[sector] = block
         DISTRIBUTIONS[sector] = dist
+
+
+INDUSTRY_DATA = {}            # industry -> compact block for the web page, see compute_industries
+
+
+def industry_rules(ind, gics):
+    return INDUSTRY_RULES.get(ind) or SECTOR_RULES.get(gics, _CORE)
+
+
+def percentile_for(n_rules):
+    """Fewer rules make a group easier to pass, so each rule sits higher. Calibrated so
+    about 2.5% to 3.5% of a group passes (22 October 2026 data), the same idea as
+    SECTOR_PERCENTILE."""
+    return 50 if n_rules >= 12 else 55 if n_rules >= 9 else 62 if n_rules >= 7 else 70
+
+
+def compute_industries(universe):
+    """Per industry: its rules, where each bar sits, and a 21 point spread for every rule,
+    blended with the sector's spread by size. One groupby per measure, so it is quick."""
+    INDUSTRY_DATA.clear()
+    mcap = pd.to_numeric(universe[FILTER_SPECS['mcap_min'][0]], errors='coerce')
+    inv = universe[mcap >= MCAP_FLOOR].copy()
+    inv['_ind'] = inv['Industry'].astype(str).str.strip()
+    inv['_g'] = inv['GICS Sector'].fillna(ALL_LABEL)
+    qs = [q / 20 for q in range(21)]
+    keys = [k for k in DEFAULT_FILTERS if k != 'mcap_min']
+    peers = quality_peers(inv)
+    spreads, sizes = {}, {}
+    for key in keys:
+        src = peers if key == 'pe_max' else inv
+        v = pd.to_numeric(src[FILTER_SPECS[key][0]], errors='coerce')
+        ok = v.notna() & (v > 0 if key in POSITIVE_ONLY else True)
+        grp = v[ok].groupby(src.loc[ok, '_ind'])
+        cnt = grp.size()
+        q = grp.quantile(qs).unstack()
+        spreads[key] = {ind: row.tolist() for ind, row in q[cnt.reindex(q.index) >= 5].iterrows()}
+    for (ind, g), sub in inv.groupby(['_ind', '_g']):
+        if not ind or ind == 'nan':
+            continue
+        if ind in EXCLUDED_INDUSTRIES:
+            INDUSTRY_DATA[ind] = {'g': g, 'n': len(sub), 'x': EXCLUDED_INDUSTRIES[ind]}
+            continue
+        rules = industry_rules(ind, g)
+        n = len(sub)
+        w = n / (n + SHRINK_K)
+        base_t = percentile_for(len([k for k in rules if k != 'mcap_min']))
+        sec = DISTRIBUTIONS.get(g) or DISTRIBUTIONS.get(ALL_LABEL) or {}
+        pos, dist = {}, {}
+        for key in rules:
+            if key == 'mcap_min':
+                continue
+            t = base_t + RULE_TARGET_SHIFT.get((g, key), 0)
+            pos[key] = t if FILTER_SPECS[key][1] == 'min' else 100 - t
+            own, wide = spreads[key].get(ind), sec.get(key)
+            if own and wide:
+                dist[key] = [float(f'{w * a + (1 - w) * b:.4g}') for a, b in zip(own, wide)]
+            elif wide:
+                dist[key] = wide
+            elif own:
+                dist[key] = [float(f'{a:.4g}') for a in own]
+        INDUSTRY_DATA[ind] = {'g': g, 'n': n, 'w': round(w, 2), 'r': rules, 'p': pos, 'd': dist}
 
 
 def fixed_rules():
@@ -1801,6 +1897,13 @@ def screen(df, gics):
         applied.append((label, ('>=' if direction == 'min' else '<='), val))
     if not BLANK_FAILS and n_active and MIN_DATA_COVERAGE > 0:
         mask &= (reported / n_active) >= MIN_DATA_COVERAGE
+    # the core figures have to be there: a blank P/E or margin is not a pass
+    for req in REQUIRED_RULES:
+        alts = [k for k in req.split('|') if f.get(k) is not None and FILTER_SPECS[k][0] not in MISSING_COLS]
+        if alts:
+            mask &= pd.to_numeric(df[FILTER_SPECS[alts[0]][0]], errors='coerce').notna()
+    if 'Industry' in df.columns and EXCLUDED_INDUSTRIES:
+        mask &= ~df['Industry'].astype(str).str.strip().isin(list(EXCLUDED_INDUSTRIES))
     return df[mask].copy(), applied, f
 
 
@@ -2592,6 +2695,9 @@ def build_html(a2, out_path, stamp, split=False):
         'ruleSets': SECTOR_RULES,
         'ruleShift': {f'{g}|{k}': v for (g, k), v in RULE_TARGET_SHIFT.items()},
         'notUsedWhy': not_used_why(),
+        'indData': INDUSTRY_DATA,
+        'excluded': EXCLUDED_INDUSTRIES,
+        'required': REQUIRED_RULES,
         'fixed': {'mcap_min': MCAP_FLOOR},
         'positiveOnly': sorted(POSITIVE_ONLY),
         'mode': THRESHOLD_MODE,
@@ -2693,6 +2799,8 @@ button,input,select{font:inherit;color:inherit}
 .box:checked::after{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;
  transform:rotate(-45deg) translate(1px,-1px)}
 .box:disabled{opacity:.4;cursor:not-allowed}
+.box:indeterminate{background:var(--navy);border-color:var(--navy)}
+.box:indeterminate::after{content:"";width:9px;height:0;border-bottom:2px solid #fff;transform:none}
 .tick .t{flex:1 1 auto}
 .tick .c{font-size:12px;color:var(--navy-2)}
 .tick.dis{cursor:not-allowed}
@@ -2704,6 +2812,14 @@ button,input,select{font:inherit;color:inherit}
 .lab{font-size:12.5px;font-weight:650;color:var(--navy);margin:14px 0 6px}
 
 .seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg.seg3{grid-template-columns:1fr 1fr 1fr}
+.sec-g{display:flex;align-items:center;gap:2px}.sec-g .tick{flex:1}
+.sec-x{border:0;background:none;color:var(--navy-2);cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px}
+.sec-x:hover{background:var(--pale,#eef1f6)}
+.ind-l{margin:0 0 6px 22px;border-left:2px solid var(--line);padding-left:8px}
+.ind-l .tick .t{font-size:12.5px}
+.peer{font-variant-numeric:tabular-nums;white-space:nowrap}.peer b{font-weight:600}.peer .ok{color:#1E7B34}
+#mx-t td .sb{display:block;font-size:11px;color:var(--navy-2)}
 .seg label{position:relative;cursor:pointer}
 .seg input{position:absolute;opacity:0;pointer-events:none}
 .seg span{display:block;text-align:center;padding:7px 6px;font-size:13px;font-weight:600;color:var(--navy)}
@@ -2863,6 +2979,15 @@ dialog#mx::backdrop{background:rgba(23,43,77,.45)}
     <label><input type="radio" name="preset" value="base"><span>Same for all</span></label>
    </div>
    <p class="hint" id="preset-hint"></p>
+   <div id="lens-wrap">
+    <div class="lab">Compare each company with</div>
+    <div class="seg seg3" role="radiogroup" aria-label="Peer group">
+     <label><input type="radio" name="lens" value="industry"><span>Its industry</span></label>
+     <label><input type="radio" name="lens" value="sector"><span>Its sector</span></label>
+     <label><input type="radio" name="lens" value="both"><span>Both</span></label>
+    </div>
+    <p class="hint" id="lens-hint"></p>
+   </div>
    <div class="sep"></div>
    <label class="tick" id="per-wrap"><input class="box" type="checkbox" id="per"><span class="t">Judge each company on its own sector's rules</span></label>
    <label class="tick"><input class="box" type="checkbox" id="strict"><span class="t">Exclude companies with missing figures</span></label>
@@ -2984,10 +3109,10 @@ const CRIT = {
 };
 const GROUPS = ['Valuation','Returns','Margins','Balance sheet','Quality scores','Size'];
 
-const S = { sel:new Set(), us:true, non:true, mq:false, q:'', preset:'tuned', per:true, strict:false,
+const S = { sel:new Set(), indOff:new Set(), lens:'both', us:true, non:true, mq:false, q:'', preset:'tuned', per:true, strict:false,
             loosen:0, on:{}, val:{}, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
             momOn:false, early:3, stages:new Set(['early']), sigs:new Set(['trend','fresh','rsi','accel','room','vol']) };
-let cur = [], lastRuleKey = null;
+let cur = [], lastRuleKey = null, IND_LIVE = new Map(), N_EXCL = 0;
 
 function boot(d){
   DATA=d; F=DATA.fields; F.forEach((f,i)=>IX[f]=i); ROWS=DATA.rows; SEC=DATA.sectors; init();
@@ -3014,7 +3139,7 @@ const realSel = () => [...S.sel].filter(i=>i!==OTHER).sort((a,b)=>a-b);
 const allSel = () => realSel().length===SEC.length && S.sel.has(OTHER);
 function ruleSector(){ const r=realSel(); return (r.length===1 && !S.sel.has(OTHER))? SEC[r[0]] : DATA.allLabel; }
 const isMulti = () => ruleSector()===DATA.allLabel;
-const perOn = () => S.per && isMulti();
+const perOn = () => S.per && (isMulti() || lensOn());
 const theSet = () => S.preset==='tuned'? DATA.tuned : DATA.base;
 const blockVals = g => Object.assign({}, DATA.defaults, theSet()[g]||{});
 const sectorsInPlay = () => realSel().map(i=>SEC[i]).concat(S.sel.has(OTHER)?[DATA.allLabel]:[]);
@@ -3059,31 +3184,115 @@ function resetRules(){
   // per-sector: every rule starts ticked, and a rule no ticked sector uses is shown disabled
   for(const f of DATA.filters) S.on[f.key] = perOn()? true : isNum(S.val[f.key]);
 }
-function ruleKey(){ return [S.preset, ruleSector(), perOn()].join('|'); }
+function ruleKey(){ return [S.preset, ruleSector(), perOn(), S.lens].join('|'); }
+
+// ---------------------------------------------------------------- industries and the two lenses
+// In the tuned set each company can be measured against its own industry, its GICS sector,
+// or both. Both lenses use the same rules at the same position in the spread; only the peer
+// group differs, so the two answers are directly comparable.
+const lensOn = () => S.preset==='tuned' && S.lens!=='sector';
+const indName = r => (DATA.industries||[])[r[IX.ind]] || '';
+const secOf = r => { const g=r[IX.gics]; return (g===null||g===undefined)? DATA.allLabel : SEC[g]; };
+let IRC = {};                       // industry -> its rules under the current ticks and strictness
+function indRules(name, sec){
+  if(IRC[name]!==undefined) return IRC[name];
+  const d=(DATA.indData||{})[name];
+  if(!d || d.x){ IRC[name]=null; return null; }
+  const sd=(DATA.dist||{})[sec]||{}, out=[];
+  for(const key of d.r){
+    const f=DATA.filters.find(x=>x.key===key); if(!f) continue;
+    if(key==='mcap_min'){ const v=(DATA.fixed||{}).mcap_min||blockVals(sec).mcap_min;
+      if(isNum(v)) out.push({key, field:f.field, dir:f.dir, pos:false, iv:v, sv:v, size:true}); continue; }
+    if(!S.on[key]) continue;
+    const p=d.p[key]; if(!isNum(p)) continue;
+    const pp=Math.max(1,Math.min(99, f.dir==='min'? p-S.loosen : p+S.loosen));
+    const di=d.d[key], ds=sd[key];
+    let iv=di? valAt(pp,di) : null, sv=ds? valAt(pp,ds) : null;
+    if(key==='piotroski_min'){ iv=iv===null?null:Math.round(iv); sv=sv===null?null:Math.round(sv); }
+    out.push({key, field:f.field, dir:f.dir, pos:(DATA.positiveOnly||[]).includes(key), iv, sv, pp, di, ds});
+  }
+  IRC[name]=out; return out;
+}
+const beats = (f,v,bar) => !((f.dir==='min'? v<bar : v>bar) || (f.pos && v<=0));
+function missingCore(r, keys){
+  for(const req of (DATA.required||[])){
+    const alts=req.split('|').filter(k=>keys.includes(k));
+    if(!alts.length) continue;
+    const f=DATA.filters.find(x=>x.key===alts[0]);
+    if(f && !isNum(r[IX[f.field]])) return CRIT[alts[0]].short;
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------- sidebar: sectors
 function buildSectors(){
-  const counts=new Array(SEC.length).fill(0); let other=0;
-  for(const r of ROWS){ const g=r[IX.gics]; if(g===null||g===undefined) other++; else counts[g]++; }
+  // GICS sectors, each opening to the TradingView industries inside it
+  const counts=new Array(SEC.length).fill(0); let other=0; const inds={};
+  for(const r of ROWS){
+    const g=r[IX.gics], k=(g===null||g===undefined)? OTHER : g;
+    if(k===OTHER) other++; else counts[k]++;
+    const nm=indName(r); if(!nm) continue;
+    const m=inds[k]=inds[k]||new Map(); m.set(nm,(m.get(nm)||0)+1);
+  }
   const box=$('sec-list'); box.innerHTML='';
   const add=(val,name,n)=>{
-    const l=document.createElement('label'); l.className='tick';
-    l.innerHTML='<input class="box" type="checkbox" value="'+val+'"><span class="t">'+esc(name)+
-      '</span><span class="c num">'+nf0.format(n)+'</span>';
-    l.querySelector('input').addEventListener('change',e=>{
-      e.target.checked? S.sel.add(val) : S.sel.delete(val); changed(true);
+    const m=[...(inds[val]||new Map()).entries()].sort((a,b)=>b[1]-a[1]);
+    const wrap=document.createElement('div');
+    const head=document.createElement('div'); head.className='sec-g';
+    head.innerHTML='<label class="tick"><input class="box" type="checkbox" value="'+val+'"><span class="t">'+esc(name)+
+      '</span><span class="c num">'+nf0.format(n)+'</span></label>'+
+      '<button type="button" class="sec-x" aria-expanded="false" aria-label="Show the industries in '+esc(name)+'">&#9656;</button>';
+    const list=document.createElement('div'); list.className='ind-l'; list.hidden=true;
+    for(const [nm,c] of m){
+      const ex=(DATA.excluded||{})[nm];
+      const l=document.createElement('label'); l.className='tick'; if(ex) l.title='Not screened: '+ex;
+      l.innerHTML='<input class="box" type="checkbox"><span class="t">'+esc(nm)+(ex?' (not screened)':'')+
+        '</span><span class="c num">'+nf0.format(c)+'</span>';
+      const cb=l.querySelector('input'); cb.dataset.ind=nm; cb.dataset.sec=val;
+      cb.addEventListener('change',e=>{
+        if(e.target.checked){
+          S.indOff.delete(nm);
+          // ticking one industry of an unticked sector selects just that industry
+          if(!S.sel.has(val)){ S.sel.add(val); m.forEach(([o])=>{ if(o!==nm) S.indOff.add(o); }); }
+        } else {
+          S.indOff.add(nm);
+          if(m.every(([o])=>S.indOff.has(o))){ S.sel.delete(val); m.forEach(([o])=>S.indOff.delete(o)); }
+        }
+        changed(true);
+      });
+      list.appendChild(l);
+    }
+    head.querySelector('input').addEventListener('change',e=>{
+      e.target.checked? S.sel.add(val) : S.sel.delete(val);
+      m.forEach(([o])=>S.indOff.delete(o)); changed(true);
     });
-    box.appendChild(l);
+    const btn=head.querySelector('.sec-x');
+    btn.onclick=()=>{ list.hidden=!list.hidden; btn.setAttribute('aria-expanded',String(!list.hidden));
+      btn.innerHTML=list.hidden?'&#9656;':'&#9662;'; };
+    if(!m.length) btn.style.visibility='hidden';
+    wrap.appendChild(head); wrap.appendChild(list); box.appendChild(wrap);
   };
   SEC.forEach((s,i)=>add(i,s,counts[i]));
   if(other){ const d=document.createElement('div'); d.className='sep'; box.appendChild(d);
     add(OTHER,'Unclassified',other); }
 }
 function syncSectors(){
-  $('sec-list').querySelectorAll('input').forEach(cb=>cb.checked=S.sel.has(parseInt(cb.value,10)));
-  const r=realSel();
-  $('sv-sec').textContent = !S.sel.size? 'None' : allSel()? 'All' :
-    (r.length===1 && !S.sel.has(OTHER))? SEC[r[0]] : S.sel.size+' ticked';
+  $('sec-list').querySelectorAll('.sec-g input').forEach(cb=>{
+    const v=parseInt(cb.value,10), on=S.sel.has(v);
+    const some=[...$('sec-list').querySelectorAll('input[data-sec="'+v+'"]')].some(x=>S.indOff.has(x.dataset.ind));
+    cb.checked=on; cb.indeterminate=on && some;
+  });
+  $('sec-list').querySelectorAll('input[data-ind]').forEach(cb=>{
+    cb.checked=S.sel.has(parseInt(cb.dataset.sec,10)) && !S.indOff.has(cb.dataset.ind); });
+  const r=realSel(), off=[...S.indOff].length;
+  $('sv-sec').textContent = (!S.sel.size? 'None' : allSel()? 'All' :
+    (r.length===1 && !S.sel.has(OTHER))? SEC[r[0]] : S.sel.size+' ticked') + (off && S.sel.size? ', '+off+' industr'+(off===1?'y':'ies')+' off' : '');
+  $('lens-wrap').hidden = S.preset!=='tuned';
+  document.querySelectorAll('input[name=lens]').forEach(x=>x.checked=x.value===S.lens);
+  $('lens-hint').textContent = S.lens==='both'
+    ? 'A company has to beat its industry and its GICS sector on every rule: the strictest and most robust test.'
+    : S.lens==='industry' ? 'Measured against its own TradingView industry. Small industries lean on their sector.'
+    : 'Measured against its GICS sector only, as before.';
 }
 
 // ---------------------------------------------------------------- sidebar: criteria
@@ -3120,7 +3329,24 @@ function syncCriteria(fails, poolN){
     const cb=row.querySelector('.box'), val=row.querySelector('.val'), lab=row.querySelector('.eff-l');
     const op='<span class="op">'+(f.dir==='min'?'&ge;':'&le;')+'</span>';
     let usable=true;
-    if(per){
+    const span = vs => { const lo=Math.min(...vs), hi=Math.max(...vs);
+      return lo===hi? ruleNum(lo,m.u) : m.u==='of 9'? ruleNum(lo,'')+' to '+ruleNum(hi,m.u) : ruleNum(lo,m.u)+' to '+ruleNum(hi,m.u); };
+    if(lensOn()){
+      // bars come from each company's industry (and its sector, for the second lens)
+      const inds=[...IND_LIVE.keys()];
+      const fs=inds.map(nm=>(IRC[nm]||[]).find(x=>x.key===k)).filter(Boolean);
+      const iv=fs.map(x=>x.iv).filter(isNum), sv=fs.map(x=>x.sv).filter(isNum);
+      usable=iv.length>0 || sv.length>0;
+      if(!usable){ const w=whyNot(inds.length===1? IND_LIVE.get(inds[0]) : ruleSector(),k);
+        val.innerHTML='<span class="rng">not used</span>';
+        lab.textContent=inds.length===1? (w[1]||'not used for this industry') : 'not used in the ticked industries'; }
+      else {
+        val.innerHTML=op+'<span class="rng num">'+span(iv.length?iv:sv)+'</span>';
+        lab.textContent = inds.length===1
+          ? (sv.length? 'industry bar; sector bar '+(f.dir==='min'?'≥ ':'≤ ')+span(sv) : 'industry bar')
+          : 'industry bars, used in '+fs.length+' of '+inds.length+' industries'+(sv.length? '; sector bars '+span(sv) : '');
+      }
+    } else if(per){
       const users=live.filter(g=>isNum(blockVals(g)[k]));
       const vals=users.map(g=>adj(blockVals(g)[k],k,g)).filter(isNum);
       usable=vals.length>0;
@@ -3163,7 +3389,37 @@ function syncCriteria(fails, poolN){
 }
 
 // ---------------------------------------------------------------- rules by sector
+function openMatrixIndustries(){
+  // one row per industry in play, one column per rule: the industry bar, the sector bar under it
+  const inds=[...IND_LIVE.entries()].sort((a,b)=>SEC.indexOf(a[1])-SEC.indexOf(b[1]) || a[0].localeCompare(b[0]));
+  const keys=DATA.filters.filter(f=>f.key!=='mcap_min' && inds.some(([nm])=>(DATA.indData[nm].r||[]).includes(f.key))).map(f=>f.key);
+  let html='<thead><tr><th scope="col">Industry</th>'+keys.map(k=>'<th scope="col">'+esc(CRIT[k].short)+'</th>').join('')+'</tr></thead><tbody>';
+  let lastSec=null;
+  for(const [nm,sec] of inds){
+    if(sec!==lastSec){ html+='<tr><td class="mx-g" colspan="'+(keys.length+1)+'">'+esc(sec===DATA.allLabel?'Unclassified':sec)+'</td></tr>'; lastSec=sec; }
+    const d=DATA.indData[nm], ir=IRC[nm]||[];
+    html+='<tr><td>'+esc(nm)+'<span class="sb">'+nf0.format(d.n)+' companies'+(d.w<0.5? ', leans on its sector' : '')+'</span></td>'+keys.map(k=>{
+      if(!(d.r||[]).includes(k)){ const w=whyNot(sec,k); return '<td class="off" title="'+esc(w[1])+'">'+esc(w[0])+'</td>'; }
+      if(!S.on[k]) return '<td class="off">unticked</td>';
+      const f=ir.find(x=>x.key===k); if(!f) return '<td class="off">no bar</td>';
+      const op=f.dir==='min'?'&ge; ':'&le; ', u=CRIT[k].u;
+      return '<td class="num">'+(isNum(f.iv)? op+ruleNum(f.iv,u) : '-')+(isNum(f.sv)? '<span class="sb">sector '+ruleNum(f.sv,u)+'</span>' : '')+'</td>';
+    }).join('')+'</tr>';
+  }
+  $('mx-t').innerHTML=html+'</tbody>';
+  $('mx-h').textContent='Rules by industry';
+  $('mx-sub').textContent='Each industry\'s bar, with its GICS sector\'s bar for the same rule underneath. Both sit at the same point of their own spread, so they differ only in the peer group. '
+    + 'Small industries lean on their sector (each bar is weighted by size toward the industry). '
+    + (S.lens==='both'? 'With "Both", a company has to clear both bars. ' : 'With "Its industry", only the top bar applies. ')
+    + (N_EXCL? nf0.format(N_EXCL)+' investment funds are not screened. ' : '')
+    + 'Hover over a reason for the full explanation.';
+  document.querySelectorAll('input[name=mxpreset]').forEach(r=>{ r.checked=r.value===S.preset;
+    r.onchange=e=>{ const main=document.querySelector('input[name=preset][value='+e.target.value+']');
+      if(main && !main.checked) main.click(); openMatrix(); }; });
+  if(!$('mx').open) $('mx').showModal();
+}
 function openMatrix(){
+  if(lensOn()) return openMatrixIndustries();
   const live=sectorsInPlay(), per=perOn();
   const cols = per? live : [isMulti()? DATA.allLabel : ruleSector()];
   const name = g => g===DATA.allLabel? (per? 'Unclassified' : 'Every ticked sector') : g;
@@ -3292,35 +3548,68 @@ function run(){
   const cache={};
   const fails={}; DATA.filters.forEach(f=>fails[f.key]=0);
   const stageCt={};
-  let poolN=0, nUS=0, nNon=0, nMq=0;
+  let poolN=0, nUS=0, nNon=0, nMq=0, nExcl=0;
   const out=[];
+  IRC={}; IND_LIVE=new Map();
+  const tuned=S.preset==='tuned', lens=lensOn();
   for(const r of ROWS){
     const g=r[IX.gics], key=(g===null||g===undefined)? OTHER : g;
     if(!S.sel.has(key)) continue;
+    const nm=indName(r);
+    if(nm && S.indOff.has(nm)) continue;
     const isUS=r[IX.ctry]==='United States';
     if(isUS) nUS++; else nNon++;
     if(r[IX.mq]) nMq++;
     if(isUS? !S.us : !S.non) continue;
     if(S.mq && !r[IX.mq]) continue;
     if(q && !((r[IX.sym]||'').toLowerCase().includes(q)||(r[IX.name]||'').toLowerCase().includes(q))) continue;
+    if(nm && (DATA.excluded||{})[nm]){ nExcl++; continue; }   // investment funds are not screened
     poolN++;
     const sec = key===OTHER? DATA.allLabel : SEC[key];
-    const rules = per? (cache[sec]=cache[sec]||rulesFor(sec)) : common;
-    let ok=true, reported=0;
-    for(const f of rules){
-      const v=r[IX[f.field]];
-      if(v===null||v===undefined){ if(strict){ ok=false; fails[f.key]++; } continue; }
-      reported++;
-      if((f.dir==='min'? v<f.val : v>f.val) || (f.pos && v<=0)){ ok=false; fails[f.key]++; }
+    const ir = (tuned && nm)? indRules(nm, sec) : null;
+    if(ir) IND_LIVE.set(nm, sec);
+    // how the company does against each peer group, shown in the table and the exports
+    r._vi=null; r._vs=null;
+    if(ir){
+      let bi=0, ti=0, bs=0, ts=0;
+      for(const f of ir){ if(f.size) continue; const v=r[IX[f.field]]; if(!isNum(v)) continue;
+        if(isNum(f.iv)){ ti++; if(beats(f,v,f.iv)) bi++; }
+        if(isNum(f.sv)){ ts++; if(beats(f,v,f.sv)) bs++; } }
+      r._vi=[bi,ti]; r._vs=[bs,ts];
+    }
+    let ok=true, reported=0, nRules=0, keys;
+    if(lens && ir){
+      keys=ir.map(f=>f.key);
+      for(const f of ir){
+        nRules++;
+        const v=r[IX[f.field]];
+        if(!isNum(v)){ if(strict){ ok=false; fails[f.key]++; } continue; }
+        reported++;
+        const okI = !isNum(f.iv) || beats(f,v,f.iv), okS = !isNum(f.sv) || beats(f,v,f.sv);
+        const pass = S.lens==='industry'? okI : (okI && okS);
+        if(!pass){ ok=false; fails[f.key]++; }
+      }
+    } else {
+      const rules = per? (cache[sec]=cache[sec]||rulesFor(sec)) : common;
+      keys=rules.map(f=>f.key);
+      for(const f of rules){
+        nRules++;
+        const v=r[IX[f.field]];
+        if(v===null||v===undefined){ if(strict){ ok=false; fails[f.key]++; } continue; }
+        reported++;
+        if((f.dir==='min'? v<f.val : v>f.val) || (f.pos && v<=0)){ ok=false; fails[f.key]++; }
+      }
     }
     // the same data-coverage guard the script applies, so counts match the workbook
-    if(ok && !strict && rules.length && DATA.minCoverage>0 && reported/rules.length<DATA.minCoverage) ok=false;
+    if(ok && !strict && nRules && DATA.minCoverage>0 && reported/nRules<DATA.minCoverage) ok=false;
+    // and the core figures have to be there at all
+    if(ok && missingCore(r, keys)) ok=false;
     if(!ok) continue;
     const st=momStage(r); r._stage=st; stageCt[st]=(stageCt[st]||0)+1;
     if(S.momOn && !S.stages.has(st)) continue;
     out.push(r);
   }
-  cur=out;
+  cur=out; N_EXCL=nExcl;
   $('c-us').textContent=nf0.format(nUS); $('c-non').textContent=nf0.format(nNon); $('c-mq').textContent=nf0.format(nMq);
   syncSectors(); syncCriteria(fails, poolN); syncMomentum(stageCt); summary(); renderTable();
 }
@@ -3370,6 +3659,11 @@ function summary(){
 const COLS = [
   {k:'co',   h:'Company', cls:'co', sort:r=>(r[IX.name]||'').toLowerCase()},
   {k:'gics', h:'Sector', cls:'l', sort:r=>SEC[r[IX.gics]]||'zz', fmt:r=>esc(SEC[r[IX.gics]]||'Unclassified')},
+  {k:'indn', h:'Industry', cls:'l', sort:r=>indName(r).toLowerCase()||'zz', fmt:r=>esc(indName(r)||'-')},
+  {k:'peer', h:'Beats industry / sector', sort:r=>r._vi&&r._vs? (r._vi[0]+r._vs[0])/Math.max(1,r._vi[1]+r._vs[1]) : -1,
+    fmt:r=>{ if(!r._vi||!r._vs) return '<span class="na">-</span>';
+      const f=v=>'<span class="'+(v[0]===v[1]?'ok':'')+'">'+v[0]+'/'+v[1]+'</span>';
+      return '<span class="peer" title="Rules beaten against its industry, then against its GICS sector">'+f(r._vi)+' &middot; '+f(r._vs)+'</span>'; }},
   {k:'ctry', h:'Country', cls:'l', sort:r=>r[IX.ctry]||'', fmt:r=>esc(r[IX.ctry]||'-')},
   {k:'mcap', h:'Market cap', fmt:r=>bn(r[IX.mcap])},
   {k:'pe',   h:'P/E', t:'x'}, {k:'fpe', h:'Fwd P/E', t:'x'},
@@ -3488,6 +3782,27 @@ function selectionLabel(){
 // the same-for-all set).
 function passReasons(r){
   const key=r[IX.gics], g=(key===null||key===undefined)? DATA.allLabel : SEC[key];
+  const nm=indName(r), ir=(lensOn() && nm)? indRules(nm,g) : null;
+  if(ir){
+    // ranked within its industry, against the industry's own bars
+    const items=[]; let missing=0;
+    for(const f of ir){
+      if(f.size) continue;
+      const v=r[IX[f.field]]; if(!isNum(v)){ missing++; continue; }
+      let rank=null; if(f.di){ const p=pctOf(v,f.di); rank=f.dir==='min'? p : 100-p; }
+      const m=CRIT[f.key];
+      items.push({rank, txt:m.short+' '+ruleNum(v,m.u),
+        bar:(f.dir==='min'?'industry bar \u2265 ':'industry bar \u2264 ')+ruleNum(f.iv,m.u)});
+    }
+    const ranked=items.filter(x=>x.rank!==null).sort((a,b)=>b.rank-a.rank), grp=nm;
+    const where=x=> x.rank>=90? 'top '+Math.max(1,Math.round(100-x.rank))+'% of '+grp
+                 : x.rank>=50? 'better than '+Math.round(x.rank)+'% of '+grp : 'only '+Math.round(x.rank)+'% of '+grp;
+    const worst=ranked.length? ranked[ranked.length-1] : null;
+    return { passed:'Cleared '+items.length+' rules'+(missing? ', '+missing+' not reported' : ''),
+      why: ranked.slice(0,3).map(x=>x.txt+', '+where(x)).join('; '),
+      list: ranked.slice(0,3).map(x=>({txt:x.txt, where:where(x)})),
+      close: worst? worst.txt+' ('+worst.bar+'), '+where(worst) : '' };
+  }
   const rules=perOn()? rulesFor(g) : rulesFor(null);
   const ds=perOn()? g : ruleSector(), grp=S.preset==='tuned'? 'sector' : 'market';
   const items=[]; let missing=0;
@@ -3519,6 +3834,14 @@ function sectorMedians(r){
   return {pe:at('pe_max'), roic:at('roic_min'), roe:at('roe_min'), gm:at('gross_margin_min'),
           om:at('op_margin_min'), fcfm:at('fcf_margin_min'), de:at('de_max'), az:at('altman_min'),
           roa:at('roa_min'), nm:at('net_margin_min')};
+}
+// the industry's median company (blended with its sector when the industry is small)
+function industryMedians(r){
+  const d=((DATA.indData||{})[indName(r)]||{}).d||{};
+  const at=k=>d[k]? d[k][10] : null;
+  return {pe:at('pe_max'), roic:at('roic_min'), roe:at('roe_min'), gm:at('gross_margin_min'),
+          om:at('op_margin_min'), fcfm:at('fcf_margin_min'), de:at('de_max'), az:at('altman_min'),
+          roa:at('roa_min'), nm:at('net_margin_min'), cr:at('current_ratio_min')};
 }
 // figures that are not believable for an operating business: usually a holding company's
 // investment gains or a one-off, so the screen and the scorecard both read them too kindly
@@ -3565,6 +3888,10 @@ function exportData(){
         dLifts:dc? (dc.l||[]) : [], dDrags:dc? (dc.d||[]) : [], dFlags:dc? (dc.x||[]) : [],
         whyList:pr.list, closeTxt:pr.close, med:sectorMedians(r), link:deepLink(r), checks:dataChecks(r),
         e50:r[IX.e50], e200:r[IX.e200], rsi:r[IX.rsi],
+        indN:((DATA.indData||{})[indName(r)]||{}).n||null, imed:industryMedians(r),
+        useKeysI:((DATA.indData||{})[indName(r)]||{}).r||null,
+        vsI:r._vi? r._vi[0]+'/'+r._vi[1] : '', vsS:r._vs? r._vs[0]+'/'+r._vs[1] : '',
+        both:(r._vi&&r._vs)? ((r._vi[0]===r._vi[1]&&r._vs[0]===r._vs[1])? 'Yes' : 'No') : '',
         useKeys:ruleSetFor((r[IX.gics]===null||r[IX.gics]===undefined)? DATA.allLabel : SEC[r[IX.gics]]),
         dLift:dc? join(dc.l) : '', dDrag:join(dataChecks(r).map(x=>'Check the data: '+x).concat(dc? (dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[]) : [])) }; })()}));
   return {deepNote: 'Deep analysis scorecard from the snapshot figures: each figure scored against its sector, five weighted pillars, Buy from 70, Hold from 45. The full deep analysis page adds price history, cash quality and forensic checks, so its verdict can differ. Names outside the deep feed are marked Not scored.', rows, meta:{
@@ -3572,7 +3899,11 @@ function exportData(){
     sectorsLabel:selectionLabel(),
     region:S.us&&S.non? 'US and non-US' : S.us? 'US listed only' : 'Listed outside the US only',
     universe:S.mq? 'Superinvestor holdings only' : 'All stocks',
-    mode:(S.preset==='tuned'? 'Sector-tuned: every bar is the median of its own sector (Financials 70th, Real Estate and Utilities 55th percentile)' : 'The same thresholds for every sector: the whole-market median')+strictTxt,
+    mode:(S.preset==='tuned'? (S.lens==='both'? 'Tuned, compared with both its industry and its GICS sector: a company must beat both medians on every rule'
+        : S.lens==='industry'? 'Tuned, compared with its own industry (small industries lean on their sector)'
+        : 'Sector-tuned: every bar is the median of its own sector (Financials 70th, Real Estate and Utilities 55th percentile)')
+        : 'The same thresholds for every sector: the whole-market median')+strictTxt
+      + '. Core figures (P/E, operating margin, ROIC or ROE) must be reported; investment funds are not screened',
     ruleBasis: perOn()? 'Each company judged on its own sector\'s rules'+strictTxt
              : isMulti()? 'One rule set, as set on screen, applied to every ticked sector'+strictTxt
              : 'The '+ruleSector()+' rules, as set on screen'+strictTxt,
@@ -3620,14 +3951,15 @@ function downloadCsv(){
   const head=['Ticker','Company','Sector','Country','Market cap (USD)','P/E','Fwd P/E','ROE %','ROA %','ROIC %',
     'Op margin %','Net margin %','FCF margin %','Debt/equity','Interest cover','Current ratio','Altman Z','Piotroski',
     '1 month %','3 months %','6 months %','YTD %','1 year %','5 year a year %','Momentum','Momentum score','Price','Currency','Superinvestor held','ISIN',
-    'Why it passed','Closest call','Deep score','Deep opinion','Deep quality','Deep financial strength','Deep valuation','Deep momentum','Lifting the score','Holding it back'];
+    'Industry','Rules beaten vs industry','Rules beaten vs GICS sector','Beats both','Why it passed','Closest call','Deep score','Deep opinion','Deep quality','Deep financial strength','Deep valuation','Deep momentum','Lifting the score','Holding it back'];
   const q=v=>{ if(v===null||v===undefined||Number.isNaN(v)) return ''; const s=String(v);
     return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
   const body=cur.map(r=>[r[IX.sym],r[IX.name],SEC[r[IX.gics]]||'Unclassified',r[IX.ctry],r[IX.mcap],r[IX.pe],r[IX.fpe],
     r[IX.roe],r[IX.roa],r[IX.roic],r[IX.om],r[IX.nm],r[IX.fcfm],r[IX.de],r[IX.ic],r[IX.cr],r[IX.az],r[IX.pf],
     r[IX.m1],r[IX.m3],r[IX.m6],r[IX.ytd],r[IX.y1],cagr(r[IX.y5]),MOM_LABEL[r._stage||momStage(r)],momScore(r),r[IX.px],r[IX.ccy],r[IX.mq]?'Yes':'',r[IX.isin]]
     .concat((()=>{ const pr=passReasons(r), dc=deepCard(r), j=a=>(a||[]).join('; ');
-      return [pr.why, pr.close, dc&&dc.s, dc? dc.o : 'Not scored', dc&&dc.q, dc&&dc.f, dc&&dc.v, dc&&dc.m,
+      return [indName(r), r._vi? r._vi[0]+'/'+r._vi[1] : '', r._vs? r._vs[0]+'/'+r._vs[1] : '',
+              (r._vi&&r._vs)? ((r._vi[0]===r._vi[1]&&r._vs[0]===r._vs[1])? 'Yes' : 'No') : '', pr.why, pr.close, dc&&dc.s, dc? dc.o : 'Not scored', dc&&dc.q, dc&&dc.f, dc&&dc.v, dc&&dc.m,
               dc? j(dc.l) : '', dc? j((dc.x||[]).map(x=>'Red flag: '+x).concat(dc.d||[])) : '']; })()).map(q).join(','));
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob(['\ufeff'+head.join(',')+'\n'+body.join('\n')],{type:'text/csv'}));
@@ -3659,7 +3991,7 @@ function rulesSig(){
 function save(){
   try{ localStorage.setItem(STORE, JSON.stringify({sel:[...S.sel], us:S.us, non:S.non, mq:S.mq, preset:S.preset,
     per:S.per, strict:S.strict, loosen:S.loosen, on:S.on, val:S.val, perPage:S.perPage, sortKey:S.sortKey,
-    sortDir:S.sortDir, momOn:S.momOn, early:S.early, sig:rulesSig(), stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
+    sortDir:S.sortDir, momOn:S.momOn, early:S.early, sig:rulesSig(), lens:S.lens, indOff:[...S.indOff], stages:[...S.stages], sigs:[...S.sigs], nsec:SEC.length})); }catch(e){}
 }
 function restore(){
   try{
@@ -3667,7 +3999,7 @@ function restore(){
     if(!o || o.nsec!==SEC.length) return false;
     Object.assign(S,{sel:new Set(o.sel), us:o.us, non:o.non, mq:o.mq, preset:o.preset, per:o.per, strict:o.strict,
       loosen:Math.max(-25,Math.min(25,o.loosen||0)), on:o.on||{}, val:o.val||{}, perPage:o.perPage||50, sortKey:o.sortKey||'mcap', sortDir:o.sortDir||-1,
-      momOn:!!o.momOn, early:o.early||3, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
+      lens:o.lens||'both', indOff:new Set(o.indOff||[]), momOn:!!o.momOn, early:o.early||3, stages:new Set(o.stages||['early']), sigs:new Set(o.sigs||SIGS.map(s=>s.k))});
     if(o.sig!==rulesSig()){ S.loosen=0; resetRules(); }   // the rules were rebuilt since this was saved
     return true;
   }catch(e){ return false; }
@@ -3675,7 +4007,7 @@ function restore(){
 function defaults(){
   Object.assign(S,{sel:new Set(SEC.map((_,i)=>i).concat([OTHER])), us:true, non:true, mq:false, q:'',
     preset:DATA.mode, per:DATA.perSector, strict:DATA.blankFails, loosen:0, page:1, perPage:50, sortKey:'mcap', sortDir:-1,
-    momOn:false, early:3, stages:new Set(['early']), sigs:new Set(SIGS.map(s=>s.k))});
+    lens:'both', indOff:new Set(), momOn:false, early:3, stages:new Set(['early']), sigs:new Set(SIGS.map(s=>s.k))});
   resetRules();
   ROWS.forEach(r=>{ delete r._sig; });
 }
@@ -3698,8 +4030,9 @@ function init(){
   lastRuleKey=ruleKey();
   syncControls(); run();
 
-  $('sec-all').onclick=()=>{ S.sel=new Set(SEC.map((_,i)=>i).concat([OTHER])); changed(true); };
-  $('sec-none').onclick=()=>{ S.sel=new Set(); changed(true); };
+  $('sec-all').onclick=()=>{ S.sel=new Set(SEC.map((_,i)=>i).concat([OTHER])); S.indOff=new Set(); changed(true); };
+  $('sec-none').onclick=()=>{ S.sel=new Set(); S.indOff=new Set(); changed(true); };
+  document.querySelectorAll('input[name=lens]').forEach(x=>x.onchange=e=>{ S.lens=e.target.value; lastRuleKey=null; changed(true); });
   $('m-us').onchange=e=>{ S.us=e.target.checked; changed(); };
   $('m-non').onchange=e=>{ S.non=e.target.checked; changed(); };
   $('m-mq').onchange=e=>{ S.mq=e.target.checked; changed(); };
@@ -3997,7 +4330,8 @@ const XP = (() => {
     const why = wb.addWorksheet('Why they passed', { views: [{ state: 'frozen', xSplit: 2, ySplit: 5, showGridLines: false }],
                                                     properties: { tabColor: { argb: A(GOLD) } } });
     const wcols = [
-      ['sym', 'Ticker', 10], ['name', 'Company', 30], ['sector', 'GICS sector', 20],
+      ['sym', 'Ticker', 10], ['name', 'Company', 30], ['sector', 'GICS sector', 20], ['ind', 'Industry', 24],
+      ['vsI', 'Rules beaten vs industry', 10], ['vsS', 'Rules beaten vs GICS sector', 10], ['both', 'Beats both', 8],
       ['passed', 'Screen', 14], ['why', 'Why it passed: its strongest figures', 52],
       ['close', 'Closest call: its weakest figure against the bar', 40],
       ['dScore', 'Deep score (of 100)', 10], ['dOp', 'Deep opinion', 12],
@@ -4010,9 +4344,9 @@ const XP = (() => {
     why.getCell('A1').font = font({ size: 16, bold: true, color: { argb: A(NAVY) } });
     why.getCell('A2').value = 'Screen columns show where the figures of each company sit in the same spread the bars came from. ' + (D.deepNote || '');
     why.getCell('A2').font = font({ size: 9, color: { argb: A(NAVY) } });
-    why.mergeCells(2, 1, 2, 10); why.getRow(2).height = 42;
+    why.mergeCells(2, 1, 2, 12); why.getRow(2).height = 42;
     why.getCell('A2').alignment = { wrapText: true, vertical: 'top' };
-    const wgroups = [['Company', 3], ['The screen', 3], ['Deep analysis scorecard', 8], ['Context', 3]];
+    const wgroups = [['Company', 4], ['The screen', 6], ['Deep analysis scorecard', 8], ['Context', 3]];
     let wc = 1;
     for (const [g, n] of wgroups) {
       if (n > 1) why.mergeCells(4, wc, 4, wc + n - 1);
@@ -4041,6 +4375,7 @@ const XP = (() => {
         if (typeof v === 'number') cell.numFmt = '0';
         if (c[0] === 'dOp' && opColor[v]) cell.font = font({ size: 9, bold: true, color: { argb: A(opColor[v]) } });
         if (c[0] === 'link' && v) cell.font = font({ size: 9, underline: true, color: { argb: A(NAVY2) } });
+        if (c[0] === 'both' && v) cell.font = font({ size: 9, bold: true, color: { argb: A(v === 'Yes' ? '1E7B34' : 'BF8F00') } });
       });
       if ((wr - 6) % 2) for (let j = 1; j <= wcols.length; j++) why.getCell(wr, j).fill = fill(BAND);
       wr++;
@@ -4384,20 +4719,33 @@ const XP = (() => {
         ['Debt / equity', r.de, md.de, fmt.z], ['Altman Z', r.az, md.az, fmt.z]];
       const KEYOF = { 'P/E': 'pe_max', ROIC: 'roic_min', ROE: 'roe_min', 'Gross margin': 'gross_margin_min',
         'Op margin': 'op_margin_min', 'FCF margin': 'fcf_margin_min', 'Debt / equity': 'de_max', 'Altman Z': 'altman_min' };
-      const uk = r.useKeys || [];
+      const uk = r.useKeysI || r.useKeys || [];
       let use = mc.filter(c => uk.includes(KEYOF[c[0]]));
       if (uk.includes('roa_min') && !uk.includes('roic_min')) use.splice(2, 0, ['ROA', r.roa, md.roa, fmt.pct]);
       if (uk.includes('net_margin_min') && !uk.includes('fcf_margin_min')) use.push(['Net margin', r.nm, md.nm, fmt.pct]);
       if (use.length < 3) use = mc;
-      const cw = Math.min(1.0, 5.75 / use.length);
-      const hdr = [T('Against its sector', { bold: true, color: WHITE, fill: { color: NAVY } })]
+      // company against two peer groups: its own industry and its GICS sector
+      const im = r.imed || {};
+      const IMK = { 'P/E': 'pe', ROIC: 'roic', ROE: 'roe', ROA: 'roa', 'Gross margin': 'gm', 'Op margin': 'om',
+        'FCF margin': 'fcfm', 'Net margin': 'nm', 'Debt / equity': 'de', 'Altman Z': 'az' };
+      const lowGood = { 'P/E': 1, 'Debt / equity': 1 };
+      const hasInd = !!(r.ind && Object.keys(im).some(k => num(im[k]) !== null));
+      const wLab = 1.95, cw = Math.min(0.95, (7.1 - wLab) / use.length);
+      const better = (lab, v, m) => num(v) === null || num(m) === null ? null : lowGood[lab] ? v <= m && v > 0 : v >= m;
+      const mark = c => { const a = hasInd ? better(c[0], num(c[1]), num(im[IMK[c[0]]])) : null, b = better(c[0], num(c[1]), num(c[2]));
+        const n = [a, b].filter(x => x !== null), k = n.filter(Boolean).length;
+        return !n.length ? INK : k === n.length ? '1E7B34' : k ? GOLD : 'B42318'; };
+      const hdr = [T('Against its peers', { bold: true, color: WHITE, fill: { color: NAVY } })]
         .concat(use.map(c => T(c[0], { bold: true, color: WHITE, fill: { color: NAVY }, align: 'right' })));
-      const rowC = [T(r.sym, { bold: true, color: NAVY })].concat(use.map(c => T(c[3](num(c[1])), { align: 'right', bold: true })));
-      const rowM = [T('Sector median', { color: NAVY })].concat(use.map(c => T(c[3](num(c[2])), { align: 'right', color: NAVY })));
-      sl.addTable([hdr, rowC, zebra(rowM, 1)], tableOpts([1.35].concat(use.map(() => cw)),
-        { x: X0, y: 4.7, fontSize: 9, rowH: 0.3 }));
-      sl.addText('Sector median among companies above $300M. For P/E, the median of the sector\'s quality peers (ROIC or ROE of 10% or more).',
-        { x: X0, y: 5.68, w: 7.1, h: 0.4, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true, valign: 'top' });
+      const rowC = [T(r.sym, { bold: true, color: NAVY })].concat(use.map(c => T(c[3](num(c[1])), { align: 'right', bold: true, color: mark(c) })));
+      const rowI = [T('Industry median' + (r.indN ? ' (' + fmt.int(r.indN) + ')' : ''), { color: NAVY })]
+        .concat(use.map(c => T(c[3](num(im[IMK[c[0]]])), { align: 'right', color: NAVY })));
+      const rowM = [T('GICS sector median', { color: NAVY })].concat(use.map(c => T(c[3](num(c[2])), { align: 'right', color: NAVY })));
+      const tRows = hasInd ? [hdr, rowC, zebra(rowI, 1), rowM] : [hdr, rowC, zebra(rowM, 1)];
+      sl.addTable(tRows, tableOpts([wLab].concat(use.map(() => cw)), { x: X0, y: 4.62, fontSize: 9, rowH: 0.27 }));
+      sl.addText((hasInd ? `Industry: ${r.ind}${r.vsI ? `. Beats its industry on ${r.vsI} rules and its sector on ${r.vsS}` : ''}. ` : '')
+        + 'Green beats both medians, gold beats one, red beats neither. Medians among companies above $300M; P/E against quality peers (ROIC or ROE of 10% or more); small industries lean on their sector.',
+        { x: X0, y: 5.75, w: 7.1, h: 0.45, fontFace: BODY, fontSize: 8.5, color: NAVY, margin: 0, isTextBox: true, valign: 'top' });
       // bottom right: recent price performance and where the price sits against its averages
       const xC = 7.95, wC = 4.78;
       heading(sl, 'Price and trend', xC, 4.6);
@@ -4431,7 +4779,8 @@ const XP = (() => {
       ['Sector mapping', 'TradingView sectors are folded into the eleven GICS sectors. REITs are moved from Finance to Real Estate by industry name.'],
       ['Figures', 'P/E, returns and margins are trailing twelve months unless stated. Current ratio and debt to equity are from the latest quarter. Market cap is in US dollars.'],
       ['Marquee held', 'Held by at least one superinvestor portfolio tracked by Dataroma. Ownership data lags the filing date.'],
-      ['Deep scorecard', 'Each figure is scored 0 to 100 against its own sector; five weighted pillars (quality 30, financial strength 20, valuation 25, momentum 15, signals 10) give the score. Buy from 70, Hold from 45. Red flags cap the opinion at Hold. Built from the snapshot figures; the full deep analysis page adds price history, cash quality and forensic checks.'],
+      ['Peer groups', 'Each company can be compared with its TradingView industry, its GICS sector, or both. Both use the same rules at the same point of their spread. Small industries lean on their sector, weighted by size. Investment funds are not screened, and P/E, operating margin and ROIC or ROE must be reported.'],
+      ['Deep scorecard', 'Each figure is scored 0 to 100 against its own GICS sector; five weighted pillars (quality 30, financial strength 20, valuation 25, momentum 15, signals 10) give the score. Buy from 70, Hold from 45. Red flags cap the opinion at Hold. Built from the snapshot figures; the full deep analysis page adds price history, cash quality and forensic checks.'],
       ['Use', 'A screen narrows the field for research. It is not a recommendation to buy or sell any security, and every name needs its own work before any decision.'],
     ];
     sN.addTable(notes.map((r, i) => zebra([T(r[0], { bold: true, color: NAVY, valign: 'top' }),
@@ -4630,6 +4979,7 @@ def main():
     a2['Investors Holding'] = a2['Symbol'].map(cnt)
 
     compute_tuned(a2)
+    compute_industries(a2)
     pool = a2[a2['Marquee Flag'] == 'Marquee holding'] if SCREEN_UNIVERSE == 'marquee' else a2
     label = 'marquee holdings only' if SCREEN_UNIVERSE == 'marquee' else 'full universe'
     unmapped = int(pool['GICS Sector'].isna().sum())
